@@ -21,7 +21,7 @@ bold = '\033[1m'
 end = '\033[0m'
 
 # Bot Configuration - REPLACE WITH YOUR ACTUAL TOKEN
-BOT_TOKEN = '8658699663:AAEgW99aIIpaR2ObfFM7SDZW7WWA3WNonq8'  # Replace with your bot token
+BOT_TOKEN = '8421340481:AAEUQ1K8CnYW9zIIH7jrni1y-CTPibf04zM'  # Replace with your bot token
 bot = TeleBot(BOT_TOKEN)
 
 # Store user sessions
@@ -662,4 +662,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print(f"\n{red}❌ Bot stopped by user{end}")
     except Exception as e:
+
         print(f"\n{red}❌ An error occurred: {str(e)}{end}")
