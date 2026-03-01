@@ -1,27 +1,29 @@
+# IGCreatorV2.py
 import requests
 import random
 import time
 import os
 import string
-import threading
 import json
+import logging
 from telebot import TeleBot
 from telebot.types import Message
 import sys
 
-# Colors for console output (optional)
-red = '\033[91m'
-green = '\033[92m'
-yellow = '\033[93m'
-blue = '\033[94m'
-purple = '\033[95m'
-cyan = '\033[96m'
-white = '\033[97m'
-bold = '\033[1m'
-end = '\033[0m'
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Bot Configuration - REPLACE WITH YOUR ACTUAL TOKEN
-BOT_TOKEN = '8421340481:AAEUQ1K8CnYW9zIIH7jrni1y-CTPibf04zM'  # Replace with your bot token
+# Get bot token from environment variable
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN environment variable not set!")
+    sys.exit(1)
+
+# Initialize bot
 bot = TeleBot(BOT_TOKEN)
 
 # Store user sessions
@@ -37,8 +39,8 @@ class UserSession:
         self.email_variations = []
         self.passwords = []
         self.fullnames = []
-        self.accounts_data = {}  # Store temporary account data
-        self.completed_accounts = []  # Store completed accounts
+        self.accounts_data = {}
+        self.completed_accounts = []
         self.current_account_index = 0
         self.waiting_for_otp = False
         self.otp_account_num = None
@@ -123,6 +125,7 @@ def set_bio(cookies_dict, first_name, username, retries=3):
                 time.sleep(2)
         return False
     except Exception as e:
+        logger.error(f"Error setting bio: {e}")
         return False
 
 def start_account_creation(user_id, email, password, fullname, account_num):
@@ -171,7 +174,8 @@ def start_account_creation(user_id, email, password, fullname, account_num):
             cookies=cookiesData,
             headers=headersData,
             data=dataPayload,
-            proxies=proxies
+            proxies=proxies,
+            timeout=30
         )
         
         usernameSuggested = None
@@ -186,13 +190,15 @@ def start_account_creation(user_id, email, password, fullname, account_num):
                 cookies=cookiesData,
                 headers=headersData,
                 data=dataPayload,
-                proxies=proxies
+                proxies=proxies,
+                timeout=30
             )
             if '"dryrun_passed":true' not in responseTwo.text:
                 bot.send_message(user_id, f"❌ Account {account_num}: Dryrun failed")
                 return None
     except Exception as e:
         bot.send_message(user_id, f"⚠️ Account {account_num}: Error in step 1: {str(e)}")
+        logger.error(f"Account {account_num} error: {e}")
         return None
 
     time.sleep(random.uniform(2, 4))
@@ -205,16 +211,21 @@ def start_account_creation(user_id, email, password, fullname, account_num):
         'jazoest': '21906',
     }
     
-    response = requests.post(
-        'https://www.instagram.com/api/v1/web/consent/check_age_eligibility/',
-        cookies=cookiesData,
-        headers=headersData,
-        data=dobData,
-        proxies=proxies
-    )
-    
-    if '"eligible_to_register":true' not in response.text:
-        bot.send_message(user_id, f"❌ Account {account_num}: Age verification failed")
+    try:
+        response = requests.post(
+            'https://www.instagram.com/api/v1/web/consent/check_age_eligibility/',
+            cookies=cookiesData,
+            headers=headersData,
+            data=dobData,
+            proxies=proxies,
+            timeout=30
+        )
+        
+        if '"eligible_to_register":true' not in response.text:
+            bot.send_message(user_id, f"❌ Account {account_num}: Age verification failed")
+            return None
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Account {account_num}: Age verification error")
         return None
 
     time.sleep(random.uniform(2, 4))
@@ -234,7 +245,7 @@ def start_account_creation(user_id, email, password, fullname, account_num):
                 cookies=cookiesData,
                 headers=headersData,
                 data=emailData,
-                timeout=15,
+                timeout=30,
                 proxies=proxies
             )
             if '"email_sent":true' in response.text:
@@ -247,6 +258,7 @@ def start_account_creation(user_id, email, password, fullname, account_num):
             else:
                 time.sleep(2)
         except Exception as e:
+            logger.error(f"Email send error: {e}")
             time.sleep(2)
 
     if not email_sent:
@@ -281,7 +293,8 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             cookies=account_data['cookiesData'],
             headers=account_data['headersData'],
             data=otpData,
-            proxies=proxies
+            proxies=proxies,
+            timeout=30
         )
         
         if '"signup_code"' in response.text:
@@ -289,7 +302,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             signupCode = jsonData.get("signup_code", "")
             bot.send_message(user_id, f"✅ Account {account_num}: OTP verification successful")
         else:
-            bot.send_message(user_id, f"❌ Account {account_num}: Invalid OTP code. Please try again.")
+            bot.send_message(user_id, f"❌ Account {account_num}: Invalid OTP code")
             return None
 
         time.sleep(random.uniform(2, 4))
@@ -317,7 +330,8 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             cookies=account_data['cookiesData'],
             headers=account_data['headersData'],
             data=finalData,
-            proxies=proxies
+            proxies=proxies,
+            timeout=30
         )
         
         if '"account_created":true' in response.text:
@@ -329,7 +343,10 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             cookies_str = format_cookies(account_data['cookiesData'])
             
             # Set bio
-            set_bio(account_data['cookiesData'], account_data['fullname'].split()[0], account_data['username_suggested'])
+            try:
+                set_bio(account_data['cookiesData'], account_data['fullname'].split()[0], account_data['username_suggested'])
+            except:
+                pass
             
             return {
                 'account_num': account_num,
@@ -345,6 +362,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             
     except Exception as e:
         bot.send_message(user_id, f"❌ Account {account_num}: Error: {str(e)}")
+        logger.error(f"OTP completion error: {e}")
         return None
 
 @bot.message_handler(commands=['start'])
@@ -355,7 +373,7 @@ def send_welcome(message):
     welcome_text = """
 🤖 *Instagram Account Creator Bot* 🤖
 
-Welcome! I can help you create multiple Instagram accounts using the same Gmail address.
+Welcome! I can help you create 4 Instagram accounts using the same Gmail address.
 
 *How it works:*
 1. Send me your Gmail address
@@ -363,7 +381,7 @@ Welcome! I can help you create multiple Instagram accounts using the same Gmail 
 3. I'll start creating accounts one by one
 4. For each account, you'll receive an OTP request
 5. Send the OTP for each account when prompted
-6. After all accounts are created, I'll send you a complete file with all credentials
+6. After all accounts are created, I'll send you a complete file
 
 *Commands:*
 /start - Start the bot
@@ -628,39 +646,39 @@ def send_credentials_file(user_id, session):
     bot.send_message(user_id, summary, parse_mode='Markdown')
     
     # Clean up file
-    os.remove(filename)
+    try:
+        os.remove(filename)
+    except:
+        pass
 
 def start_bot():
-    print(f"{green}🤖 Instagram Account Creator Bot Started{end}")
-    print(f"{cyan}Bot is running... Press Ctrl+C to stop{end}")
+    """Main bot function"""
+    logger.info("🤖 Instagram Account Creator Bot Started")
     
     # Test bot connection
     try:
         bot_info = bot.get_me()
-        print(f"{green}✅ Bot connected: @{bot_info.username}{end}")
-        print(f"{green}✅ Bot name: {bot_info.first_name}{end}")
+        logger.info(f"✅ Bot connected: @{bot_info.username}")
     except Exception as e:
-        print(f"{red}❌ Failed to connect: {e}{end}")
-        print(f"{yellow}Please check your bot token{end}")
-        sys.exit(1)
+        logger.error(f"❌ Failed to connect: {e}")
+        time.sleep(10)
+        return
     
     # Remove webhook if exists
-    bot.remove_webhook()
+    try:
+        bot.remove_webhook()
+        logger.info("✅ Webhook removed")
+    except:
+        pass
     
     # Start polling
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    logger.info("🔄 Starting polling...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
-    try:
-        # Check if bot token is set
-        if BOT_TOKEN == 'YOUR_ACTUAL_BOT_TOKEN_HERE':
-            print(f"{red}❌ Please set your BOT_TOKEN in the script!{end}")
-            print(f"{yellow}Get a token from @BotFather on Telegram{end}")
-            sys.exit(1)
-        
-        start_bot()
-    except KeyboardInterrupt:
-        print(f"\n{red}❌ Bot stopped by user{end}")
-    except Exception as e:
-
-        print(f"\n{red}❌ An error occurred: {str(e)}{end}")
+    start_bot()
