@@ -33,13 +33,34 @@ user_sessions = {}
 sessions_lock = threading.Lock()
 
 # Proxy configuration (set to None if not using proxies)
-proxies = None
-# Example proxy configuration:
-# proxies = {
-#     'http': 'http://user:pass@ip:port',
-#     'https': 'http://user:pass@ip:port'
-# }
+proxies = True
+# List of proxies (format: 'http://user:pass@ip:port' or 'socks5://user:pass@ip:port')
+# Add your proxies here:
+PROXY_LIST = [
+    # Format for authenticated proxies:
+    'http://tlsriwdy:b6e6nwmmvy9j@31.59.20.176:6754',
+    'http://tlsriwdy:b6e6nwmmvy9j@198.23.239.134:6540',
+    'http://tlsriwdy:b6e6nwmmvy9j@23.95.150.145:6114',
+    'http://tlsriwdy:b6e6nwmmvy9j@45.38.107.97:6014',
+    'http://tlsriwdy:b6e6nwmmvy9j@107.172.163.27:6543',
+    'http://tlsriwdy:b6e6nwmmvy9j@198.105.121.200:6462',
+    'http://tlsriwdy:b6e6nwmmvy9j@64.137.96.74:6641',
+    'http://tlsriwdy:b6e6nwmmvy9j@216.10.27.159:6837',
+    'http://tlsriwdy:b6e6nwmmvy9j@142.111.67.146:5611',
+    'http://tlsriwdy:b6e6nwmmvy9j@194.39.32.164:6461',
+    
+    # Format for non-authenticated proxies:
+    # 'http://ip_address:port',
+    # 'socks5://ip_address:port',
+    
+    # Examples (replace with your actual proxies):
+    # 'http://user123:pass456@192.168.1.1:8080',
+    # 'socks5://user789:pass012@203.0.113.5:1080',
+]
 
+# If no proxies, set to False
+if not PROXY_LIST:
+    PROXY_ENABLED = False
 # List of user agents to rotate (prevents detection)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1030,3 +1051,4 @@ def start_bot():
 
 if __name__ == "__main__":
     start_bot()
+
