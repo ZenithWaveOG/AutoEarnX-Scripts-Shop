@@ -1,18 +1,9 @@
-# Core dependencies
 requests==2.31.0
 pyTelegramBotAPI==4.16.1
 python-dotenv==1.0.0
-
-# Optional but recommended
-cfonts==3.2.0
-colorama==0.4.6
-
-# For better performance
+flask==3.0.0
+gunicorn==21.2.0
 certifi==2024.2.2
 urllib3==2.2.1
 idna==3.6
 charset-normalizer==3.3.2
-
-# For proxy support (if needed)
-socksipy-branch==1.1
-PySocks==1.7.1
