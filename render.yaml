@@ -1,9 +1,10 @@
 services:
   - type: web
-    name: instagram-bot
+    name: autoearnx-instagram-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn render_bot:app
+    startCommand: gunicorn render_bot:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 0
     envVars:
       - key: BOT_TOKEN
         sync: false
+    healthCheckPath: /health
