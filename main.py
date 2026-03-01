@@ -32,7 +32,34 @@ bot = TeleBot(BOT_TOKEN)
 user_sessions = {}
 sessions_lock = threading.Lock()
 
-proxies = None  # Set if needed
+# Proxy configuration (set to None if not using proxies)
+proxies = None
+# Example proxy configuration:
+# proxies = {
+#     'http': 'http://user:pass@ip:port',
+#     'https': 'http://user:pass@ip:port'
+# }
+
+# List of user agents to rotate (prevents detection)
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0',
+]
+
+# Instagram API endpoints
+INSTAGRAM_ENDPOINTS = {
+    'attempt': 'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/',
+    'age_check': 'https://www.instagram.com/api/v1/web/consent/check_age_eligibility/',
+    'send_email': 'https://www.instagram.com/api/v1/accounts/send_verify_email/',
+    'verify_otp': 'https://www.instagram.com/api/v1/accounts/check_confirmation_code/',
+    'create': 'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/',
+    'edit': 'https://www.instagram.com/api/v1/web/accounts/edit/'
+}
 
 class UserSession:
     def __init__(self, user_id):
@@ -50,7 +77,10 @@ class UserSession:
         self.total_accounts = 4
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
-        self.lock = threading.Lock()  # Per-user lock
+        self.lock = threading.Lock()
+        self.retry_count = 0
+        self.max_retries = 3
+        self.failed_accounts = []
     
     def update_activity(self):
         self.last_activity = datetime.now()
@@ -61,11 +91,11 @@ def get_user_session(user_id):
         if user_id not in user_sessions:
             user_sessions[user_id] = UserSession(user_id)
         
-        # Clean up old sessions (older than 1 hour)
+        # Clean up old sessions (older than 2 hours)
         current_time = datetime.now()
         expired_users = []
         for uid, session in user_sessions.items():
-            if (current_time - session.last_activity).seconds > 3600:  # 1 hour
+            if (current_time - session.last_activity).seconds > 7200:  # 2 hours
                 expired_users.append(uid)
         
         for uid in expired_users:
@@ -79,8 +109,8 @@ def generate_password(length=12):
     return ''.join(random.choice(characters) for i in range(length))
 
 def generate_fullname():
-    first_names = ["Alex", "Jordan", "Taylor", "Casey", "Riley", "Morgan", "Cameron", "Quinn", "Avery", "Blake"]
-    last_names = ["Smith", "Johnson", "Brown", "Taylor", "Lee", "Wilson", "Martin", "White", "Harris", "Clark"]
+    first_names = ["Alex", "Jordan", "Taylor", "Casey", "Riley", "Morgan", "Cameron", "Quinn", "Avery", "Blake", "Jamie", "Sydney", "Parker", "Remy", "Sage"]
+    last_names = ["Smith", "Johnson", "Brown", "Taylor", "Lee", "Wilson", "Martin", "White", "Harris", "Clark", "Lewis", "Walker", "Hall", "Young", "King"]
     return f"{random.choice(first_names)} {random.choice(last_names)}"
 
 def format_cookies(cookies_dict):
@@ -109,34 +139,51 @@ def generate_gmail_variations(base_email, count=4):
     
     local_part = base_email.split('@')[0]
     
-    variations = [
-        base_email,
-        modify_gmail_for_dot_trick(base_email, [3]),
-        modify_gmail_for_dot_trick(base_email, [2, 5]),
-        modify_gmail_for_dot_trick(base_email, [4, 7])
-    ]
+    # Create variations with different dot patterns
+    if len(local_part) >= 8:
+        variations = [
+            base_email,  # Original
+            modify_gmail_for_dot_trick(base_email, [2]),  # Dot after 2nd char
+            modify_gmail_for_dot_trick(base_email, [3, 5]),  # Dots after 3rd and 5th
+            modify_gmail_for_dot_trick(base_email, [2, 4, 6])  # Multiple dots
+        ]
+    elif len(local_part) >= 5:
+        variations = [
+            base_email,
+            modify_gmail_for_dot_trick(base_email, [1]),
+            modify_gmail_for_dot_trick(base_email, [2, 3]),
+            modify_gmail_for_dot_trick(base_email, [1, 3])
+        ]
+    else:
+        variations = [base_email] * 4
     
     return variations
 
-def set_bio(cookies_dict, first_name, username, retries=3):
+def set_bio(cookies_dict, first_name, username, retries=2):
+    """Set bio for the account (optional)"""
     try:
         sessionid = cookies_dict.get('sessionid', '')
         csrftoken = cookies_dict.get('csrftoken', '')
         if not sessionid or not csrftoken:
             return False
 
-        url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
+        url = INSTAGRAM_ENDPOINTS['edit']
+        
+        # Rotate user agent
+        user_agent = random.choice(USER_AGENTS)
+        
         headers = {
             'cookie': f'sessionid={sessionid}; csrftoken={csrftoken};',
             'x-csrftoken': csrftoken,
             'referer': 'https://www.instagram.com/accounts/edit/',
             'x-requested-with': 'XMLHttpRequest',
-            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'user-agent': user_agent,
             'content-type': 'application/x-www-form-urlencoded',
             'x-ig-app-id': '936619743392459',
             'origin': 'https://www.instagram.com',
         }
-        biography = "F - 22 , wish me on 21 november."
+        
+        biography = "✨ Living my best life ✨"
         data = {
             'biography': biography,
             'chaining_enabled': 'on',
@@ -145,40 +192,90 @@ def set_bio(cookies_dict, first_name, username, retries=3):
             'username': username,
             'jazoest': '21906'
         }
+        
         for attempt in range(1, retries + 1):
-            resp = requests.post(url, headers=headers, data=data, proxies=proxies, timeout=30)
-            if resp.status_code == 200 and '"status":"ok"' in resp.text:
-                return True
-            else:
+            try:
+                resp = requests.post(
+                    url, 
+                    headers=headers, 
+                    data=data, 
+                    proxies=proxies, 
+                    timeout=20
+                )
+                if resp.status_code == 200 and '"status":"ok"' in resp.text:
+                    return True
+                else:
+                    time.sleep(2)
+            except:
                 time.sleep(2)
         return False
     except Exception as e:
         logger.error(f"Error setting bio: {e}")
         return False
 
+def make_instagram_request(url, cookies, headers, data, max_retries=3):
+    """Make Instagram API request with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            # Rotate user agent on each attempt
+            if 'user-agent' in headers:
+                headers['user-agent'] = random.choice(USER_AGENTS)
+            
+            response = requests.post(
+                url,
+                cookies=cookies,
+                headers=headers,
+                data=data,
+                proxies=proxies,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 429:  # Too many requests
+                wait_time = (attempt + 1) * 10
+                time.sleep(wait_time)
+            else:
+                time.sleep(3)
+        except requests.exceptions.Timeout:
+            time.sleep(5)
+        except requests.exceptions.ConnectionError:
+            time.sleep(5)
+        except Exception as e:
+            logger.error(f"Request error: {e}")
+            time.sleep(3)
+    
+    return None
+
 def start_account_creation(user_id, email, password, fullname, account_num):
     """Start the account creation process and return temporary data"""
     
     encryptedPassword = f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}'
     
+    # Base cookies (these are public/non-sensitive)
     cookiesData = {
         'csrftoken': 'nu94r8FbL9bCmhtUkJuCPK',
         'mid': 'aQLm1gABAAE842f-IkSwe_vjC30a',
         'datr': '1eYCaXxZangEyVhuLFgYLFCM',
         'ig_did': '997BCE58-8A0A-44B9-97D3-868C981F2DB0',
         'ig_nrcb': '1',
-        'dpr': '3.558248996734619',
-        'wd': '774x1471',
     }
     
+    # Rotate user agent
+    user_agent = random.choice(USER_AGENTS)
+    
     headersData = {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'User-Agent': user_agent,
         'Content-Type': 'application/x-www-form-urlencoded',
         'x-csrftoken': 'nu94r8FbL9bCmhtUkJuCPK',
         'x-ig-app-id': '936619743392459',
         'origin': 'https://www.instagram.com',
         'referer': 'https://www.instagram.com/accounts/emailsignup/',
-        'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7'
+        'accept-language': 'en-US,en;q=0.9',
+        'accept': '*/*',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
     }
     
     try:
@@ -199,84 +296,74 @@ def start_account_creation(user_id, email, password, fullname, account_num):
         'jazoest': '21906',
     }
     
-    try:
-        response = requests.post(
-            'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/',
-            cookies=cookiesData,
-            headers=headersData,
-            data=dataPayload,
-            proxies=proxies,
-            timeout=30
-        )
-        
-        usernameSuggested = None
-        if '"message": "This field is required."' in response.text:
-            try:
-                jsonData = response.json()
-                usernameSuggested = jsonData.get("username_suggestions", [None])[0]
-            except:
-                pass
-        
-        if usernameSuggested:
-            dataPayload['username'] = usernameSuggested
-            responseTwo = requests.post(
-                'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/',
-                cookies=cookiesData,
-                headers=headersData,
-                data=dataPayload,
-                proxies=proxies,
-                timeout=30
-            )
-            if '"dryrun_passed":true' not in responseTwo.text:
-                try:
-                    bot.send_message(user_id, f"❌ Account {account_num}: Dryrun failed")
-                except:
-                    pass
-                return None
-    except Exception as e:
+    # Step 1: Initial attempt
+    response = make_instagram_request(
+        INSTAGRAM_ENDPOINTS['attempt'],
+        cookiesData,
+        headersData,
+        dataPayload
+    )
+    
+    if not response:
         try:
-            bot.send_message(user_id, f"⚠️ Account {account_num}: Error in step 1: {str(e)}")
+            bot.send_message(user_id, f"❌ Account {account_num}: Network error, please try again later")
         except:
             pass
-        logger.error(f"User {user_id} Account {account_num} error: {e}")
         return None
-
-    time.sleep(random.uniform(2, 4))
-
-    # Age verification
-    dobData = {
-        'day': '15',
-        'month': '4',
-        'year': '2006',
-        'jazoest': '21906',
-    }
     
+    usernameSuggested = None
     try:
-        response = requests.post(
-            'https://www.instagram.com/api/v1/web/consent/check_age_eligibility/',
-            cookies=cookiesData,
-            headers=headersData,
-            data=dobData,
-            proxies=proxies,
-            timeout=30
+        if '"message": "This field is required."' in response.text:
+            jsonData = response.json()
+            usernameSuggested = jsonData.get("username_suggestions", [None])[0]
+    except:
+        pass
+    
+    if usernameSuggested:
+        dataPayload['username'] = usernameSuggested
+        
+        # Second attempt with username
+        responseTwo = make_instagram_request(
+            INSTAGRAM_ENDPOINTS['attempt'],
+            cookiesData,
+            headersData,
+            dataPayload
         )
         
-        if '"eligible_to_register":true' not in response.text:
+        if not responseTwo or '"dryrun_passed":true' not in responseTwo.text:
             try:
-                bot.send_message(user_id, f"❌ Account {account_num}: Age verification failed")
+                bot.send_message(user_id, f"❌ Account {account_num}: Username validation failed")
             except:
                 pass
             return None
-    except Exception as e:
+
+    time.sleep(random.uniform(3, 6))
+
+    # Step 2: Age verification
+    dobData = {
+        'day': str(random.randint(1, 28)),
+        'month': str(random.randint(1, 12)),
+        'year': str(random.randint(1990, 2005)),
+        'jazoest': '21906',
+    }
+    
+    response = make_instagram_request(
+        INSTAGRAM_ENDPOINTS['age_check'],
+        cookiesData,
+        headersData,
+        dobData
+    )
+    
+    if not response or '"eligible_to_register":true' not in response.text:
         try:
-            bot.send_message(user_id, f"❌ Account {account_num}: Age verification error")
+            bot.send_message(user_id, f"❌ Account {account_num}: Age verification failed")
         except:
             pass
         return None
 
-    time.sleep(random.uniform(2, 4))
+    time.sleep(random.uniform(3, 6))
 
-    # Send verification email
+    # Step 3: Send verification email (with multiple retry attempts)
     emailData = {
         'device_id': 'aQLm1gABAAE842f-IkSwe_vjC30a',
         'email': email,
@@ -284,35 +371,78 @@ def start_account_creation(user_id, email, password, fullname, account_num):
     }
     
     email_sent = False
-    for attempt in range(3):
+    max_email_attempts = 5
+    
+    for attempt in range(max_email_attempts):
         try:
+            # Rotate user agent for each attempt
+            headersData['user-agent'] = random.choice(USER_AGENTS)
+            
             response = requests.post(
-                'https://www.instagram.com/api/v1/accounts/send_verify_email/',
+                INSTAGRAM_ENDPOINTS['send_email'],
                 cookies=cookiesData,
                 headers=headersData,
                 data=emailData,
                 timeout=30,
                 proxies=proxies
             )
-            if '"email_sent":true' in response.text:
-                try:
-                    bot.send_message(
-                        user_id, 
-                        f"📨 Account {account_num}: Verification email sent to {email}!"
-                    )
-                except:
-                    pass
-                email_sent = True
-                break
+            
+            if response.status_code == 200:
+                if '"email_sent":true' in response.text:
+                    try:
+                        bot.send_message(
+                            user_id, 
+                            f"📨 Account {account_num}: Verification email sent to {email}!"
+                        )
+                    except:
+                        pass
+                    email_sent = True
+                    break
+                elif '"error"' in response.text:
+                    # Check if it's a rate limit error
+                    try:
+                        error_data = response.json()
+                        if 'rate_limit_error' in str(error_data):
+                            wait_time = 30 * (attempt + 1)
+                            time.sleep(wait_time)
+                        else:
+                            time.sleep(10)
+                    except:
+                        time.sleep(10)
+                else:
+                    time.sleep(10)
+            elif response.status_code == 429:
+                wait_time = 30 * (attempt + 1)
+                time.sleep(wait_time)
             else:
-                time.sleep(2)
+                time.sleep(10)
+                
+        except requests.exceptions.Timeout:
+            time.sleep(15)
+        except requests.exceptions.ConnectionError:
+            time.sleep(15)
         except Exception as e:
             logger.error(f"Email send error for user {user_id}: {e}")
-            time.sleep(2)
+            time.sleep(10)
 
     if not email_sent:
         try:
-            bot.send_message(user_id, f"❌ Account {account_num}: Failed to send verification email")
+            bot.send_message(
+                user_id, 
+                f"⚠️ Account {account_num}: Email sending taking longer than expected.\n"
+                f"Please check your email and send OTP when received."
+            )
+            # Still return data to allow OTP input
+            return {
+                'account_num': account_num,
+                'email': email,
+                'password': password,
+                'fullname': fullname,
+                'username_suggested': usernameSuggested,
+                'cookiesData': cookiesData,
+                'headersData': headersData,
+                'email_sent': False
+            }
         except:
             pass
         return None
@@ -325,13 +455,17 @@ def start_account_creation(user_id, email, password, fullname, account_num):
         'fullname': fullname,
         'username_suggested': usernameSuggested,
         'cookiesData': cookiesData,
-        'headersData': headersData
+        'headersData': headersData,
+        'email_sent': True
     }
 
 def complete_account_with_otp(user_id, account_num, otp_code, account_data):
     """Complete account creation using OTP"""
     
     try:
+        # Rotate user agent
+        account_data['headersData']['user-agent'] = random.choice(USER_AGENTS)
+        
         # Verify OTP
         otpData = {
             'code': otp_code,
@@ -340,20 +474,29 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             'jazoest': '21906',
         }
         
-        response = requests.post(
-            'https://www.instagram.com/api/v1/accounts/check_confirmation_code/',
-            cookies=account_data['cookiesData'],
-            headers=account_data['headersData'],
-            data=otpData,
-            proxies=proxies,
-            timeout=30
+        response = make_instagram_request(
+            INSTAGRAM_ENDPOINTS['verify_otp'],
+            account_data['cookiesData'],
+            account_data['headersData'],
+            otpData
         )
         
-        if '"signup_code"' in response.text:
-            jsonData = response.json()
-            signupCode = jsonData.get("signup_code", "")
+        if not response:
             try:
-                bot.send_message(user_id, f"✅ Account {account_num}: OTP verification successful")
+                bot.send_message(user_id, f"❌ Account {account_num}: OTP verification network error")
+            except:
+                pass
+            return None
+        
+        signupCode = None
+        if '"signup_code"' in response.text:
+            try:
+                jsonData = response.json()
+                signupCode = jsonData.get("signup_code", "")
+                try:
+                    bot.send_message(user_id, f"✅ Account {account_num}: OTP verification successful")
+                except:
+                    pass
             except:
                 pass
         else:
@@ -363,7 +506,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
                 pass
             return None
 
-        time.sleep(random.uniform(2, 4))
+        time.sleep(random.uniform(3, 6))
 
         # Final account creation
         finalData = {
@@ -383,14 +526,22 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             'jazoest': '21906',
         }
         
-        response = requests.post(
-            'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/',
-            cookies=account_data['cookiesData'],
-            headers=account_data['headersData'],
-            data=finalData,
-            proxies=proxies,
-            timeout=30
+        # Rotate user agent again
+        account_data['headersData']['user-agent'] = random.choice(USER_AGENTS)
+        
+        response = make_instagram_request(
+            INSTAGRAM_ENDPOINTS['create'],
+            account_data['cookiesData'],
+            account_data['headersData'],
+            finalData
         )
+        
+        if not response:
+            try:
+                bot.send_message(user_id, f"❌ Account {account_num}: Creation network error")
+            except:
+                pass
+            return None
         
         if '"account_created":true' in response.text:
             try:
@@ -403,7 +554,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             account_data['cookiesData'].update(response_cookies)
             cookies_str = format_cookies(account_data['cookiesData'])
             
-            # Set bio (don't wait for it)
+            # Try to set bio (don't wait for it)
             try:
                 set_bio(account_data['cookiesData'], account_data['fullname'].split()[0], account_data['username_suggested'])
             except:
@@ -439,24 +590,28 @@ def send_welcome(message):
     session.update_activity()
     
     welcome_text = """
-🤖 *Instagram Account Creator Bot* 🤖
+🤖 *AutoEarnX Instagram Creator Bot* 🤖
 
 Welcome! I can help you create 4 Instagram accounts using the same Gmail address.
 
+*Features:*
+✅ Create 4 accounts with one Gmail (dot trick)
+✅ Auto-generate passwords
+✅ Random full names
+✅ Multi-user support (50+ users)
+✅ Automatic retry on failure
+
 *How it works:*
 1. Send me your Gmail address
-2. I'll generate 4 email variations using the dot trick
-3. I'll start creating accounts one by one
-4. For each account, you'll receive an OTP request
-5. Send the OTP for each account when prompted
-6. After all accounts are created, I'll send you a complete file
-
-*Multi-User Support:* ✅ 5+ users can use simultaneously
+2. I'll generate 4 email variations
+3. For each account, you'll receive OTP request
+4. Send the OTP for each account
+5. Receive all credentials in one file
 
 *Commands:*
 /start - Start the bot
 /cancel - Cancel current operation
-/status - Check current progress
+/status - Check your progress
 /help - Show this help message
 
 Send me your Gmail address to begin!
@@ -478,15 +633,13 @@ def send_help(message):
 /status - Check your current progress
 /help - Show this help message
 
-*How it works:*
-1. Send your Gmail address
-2. Bot creates 4 email variations
-3. For each account, you'll get OTP request
-4. Send OTP for each account
-5. Receive all credentials in one file
+*Troubleshooting:*
+• If email not received, wait 1-2 minutes
+• Check spam folder
+• Use /status to check progress
+• If account fails, it will auto-skip
 
-*Note:* Each user has independent session
-*Timeout:* Sessions expire after 1 hour of inactivity
+*Note:* Sessions expire after 2 hours of inactivity
     """
     
     bot.reply_to(message, help_text, parse_mode='Markdown')
@@ -511,11 +664,14 @@ def check_status(message):
         current = session.current_account_index + 1 if session.current_account_index < total else total
         
         status_text = f"📊 *Your Progress Status*\n\n"
-        status_text += f"Completed: {completed}/{total}\n"
-        status_text += f"Current Account: {current}/{total}\n"
+        status_text += f"✅ Completed: {completed}/{total}\n"
+        status_text += f"🔄 Current Account: {current}/{total}\n"
         
         if session.waiting_for_otp:
             status_text += f"\n⏳ Waiting for OTP for Account {session.otp_account_num}"
+        
+        if session.failed_accounts:
+            status_text += f"\n❌ Failed: {len(session.failed_accounts)} accounts"
         
         if session.base_email:
             status_text += f"\n\n📧 Base Email: `{session.base_email}`"
@@ -715,10 +871,12 @@ Please check your email and send me the OTP code:
                 pass
         else:
             # Account creation failed at initial stage
+            session.failed_accounts.append(account_num)
+            
             try:
                 bot.send_message(
                     user_id,
-                    f"❌ Account {account_num} creation failed at initial stage.\n"
+                    f"⚠️ Account {account_num} encountered an issue.\n"
                     f"Skipping to next account..."
                 )
             except:
@@ -734,7 +892,11 @@ Please check your email and send me the OTP code:
                     send_credentials_file(user_id, session)
                 else:
                     try:
-                        bot.send_message(user_id, "❌ No accounts were created successfully.")
+                        bot.send_message(
+                            user_id, 
+                            "❌ No accounts were created successfully.\n"
+                            "Please try again later or use a different email."
+                        )
                     except:
                         pass
                 with sessions_lock:
@@ -769,6 +931,11 @@ def send_credentials_file(user_id, session):
                 f.write(f"Cookies: {account['cookies']}\n")
                 f.write("-" * 40 + "\n\n")
             
+            if session.failed_accounts:
+                f.write("\n⚠️ FAILED ACCOUNTS:\n")
+                for acc_num in session.failed_accounts:
+                    f.write(f"Account {acc_num}\n")
+            
             f.write("=" * 60 + "\n")
             f.write("END OF FILE\n")
             f.write("=" * 60 + "\n")
@@ -779,17 +946,24 @@ def send_credentials_file(user_id, session):
             bot.send_document(
                 user_id, 
                 f, 
-                caption=f"✅ *All {len(session.completed_accounts)} accounts created successfully!*\nHere's your credentials file.",
+                caption=f"✅ *{len(session.completed_accounts)} accounts created successfully!*\nHere's your credentials file.",
                 parse_mode='Markdown'
             )
     except Exception as e:
         logger.error(f"Error sending file to user {user_id}: {e}")
+        try:
+            bot.send_message(user_id, "✅ Accounts created but file send failed. Check logs.")
+        except:
+            pass
     
     # Also send summary
     with session.lock:
         summary = "📊 *CREATION SUMMARY*\n\n"
         for account in session.completed_accounts:
             summary += f"✅ Account {account['account_num']}: @{account['username']}\n"
+        
+        if session.failed_accounts:
+            summary += f"\n❌ Failed: {len(session.failed_accounts)} accounts"
     
     try:
         bot.send_message(user_id, summary, parse_mode='Markdown')
@@ -822,7 +996,7 @@ def cleanup_old_sessions():
 
 def start_bot():
     """Main bot function"""
-    logger.info("🤖 Instagram Account Creator Bot Started (Multi-User Mode)")
+    logger.info("🤖 AutoEarnX Instagram Account Creator Bot Started (Multi-User Mode)")
     
     # Start cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_old_sessions, daemon=True)
