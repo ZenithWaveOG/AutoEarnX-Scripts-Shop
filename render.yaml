@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: instagram-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn render_bot:app
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
