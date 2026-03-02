@@ -21,7 +21,5 @@ services:
         required: true
       - key: PYTHON_VERSION
         value: 3.14.3
-      - key: RENDER_EXTERNAL_URL
-        value: https://your-app-name.onrender.com
     healthCheckPath: /health
     autoDeploy: true
