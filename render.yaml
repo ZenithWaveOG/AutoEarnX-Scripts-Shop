@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: instagram-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn AutoInstaCreatorV3:app
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        value: "8537079657"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        value: https://your-app-name.onrender.com
