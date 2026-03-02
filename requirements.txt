@@ -1,7 +1,25 @@
+# Core dependencies
 pyTelegramBotAPI==4.14.0
 requests==2.31.0
 Flask==2.3.3
-supabase==2.0.3
-psycopg2-binary==2.9.9
-python-dotenv==1.0.0
 gunicorn==21.2.0
+
+# Supabase and database
+supabase==1.2.0
+postgrest==0.10.9
+psycopg2-binary==2.9.9
+gotrue==1.0.0
+realtime==1.0.0
+storage3==0.5.0
+
+# HTTP client (specific versions for compatibility)
+httpx==0.24.1
+httpcore==0.17.3
+h11==0.14.0
+
+# Utilities
+python-dotenv==1.0.0
+python-dateutil==2.8.2
+typing-extensions==4.8.0
+pydantic==2.4.2
+pydantic-core==2.10.1
