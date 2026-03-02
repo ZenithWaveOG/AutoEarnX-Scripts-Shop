@@ -9,16 +9,12 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
-        required: true
       - key: ADMIN_IDS
         value: "8537079657"
-        required: true
       - key: SUPABASE_URL
         sync: false
-        required: true
       - key: SUPABASE_KEY
         sync: false
-        required: true
       - key: PYTHON_VERSION
         value: 3.14.3
     healthCheckPath: /health
