@@ -5,7 +5,7 @@ services:
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn AutoInstaCreatorV3:app --workers 1 --threads 4 --timeout 120
+    startCommand: gunicorn bot:app --workers 1 --threads 4 --timeout 120
     envVars:
       - key: BOT_TOKEN
         sync: false
