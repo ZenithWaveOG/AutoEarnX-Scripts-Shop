@@ -4,8 +4,8 @@ Flask==3.0.3
 requests==2.31.0
 gunicorn==22.0.0
 
-# Database
-psycopg2-binary==2.9.9
+# Database - pure Python driver, no compilation needed
+pg8000==1.30.5
 
 # Utilities
 python-dotenv==1.0.1
