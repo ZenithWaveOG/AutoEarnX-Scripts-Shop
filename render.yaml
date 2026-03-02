@@ -2,16 +2,26 @@ services:
   - type: web
     name: instagram-bot
     runtime: python
+    region: oregon
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn AutoInstaCreatorV3:app
+    startCommand: gunicorn AutoInstaCreatorV3:app --workers 1 --threads 4 --timeout 120
     envVars:
       - key: BOT_TOKEN
         sync: false
+        required: true
       - key: ADMIN_IDS
         value: "8537079657"
+        required: true
       - key: SUPABASE_URL
         sync: false
+        required: true
       - key: SUPABASE_KEY
         sync: false
+        required: true
+      - key: PYTHON_VERSION
+        value: 3.14.3
       - key: RENDER_EXTERNAL_URL
         value: https://your-app-name.onrender.com
+    healthCheckPath: /health
+    autoDeploy: true
