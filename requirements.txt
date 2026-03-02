@@ -1,6 +1,0 @@
-pyTelegramBotAPI==4.18.0
-Flask==3.0.3
-requests==2.31.0
-gunicorn==22.0.0
-pg8000==1.30.5
-python-dotenv==1.0.1
