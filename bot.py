@@ -1,21 +1,25 @@
+#!/usr/bin/env python3
+"""
+Instagram Account Creator Bot - Working with Python 3.14.3
+Using direct PostgreSQL connection instead of supabase-py
+"""
+
 import requests
 import random
 import time
 import os
 import string
-import threading
 import json
 from telebot import TeleBot
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from flask import Flask, request, jsonify
 import sys
-from supabase import create_client, Client
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import logging
-import hmac
-import hashlib
+import threading
+from functools import wraps
 
 # Set up logging
 logging.basicConfig(
@@ -38,19 +42,14 @@ end = '\033[0m'
 # Bot Configuration - Use environment variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 ADMIN_IDS = [int(id.strip()) for id in os.environ.get('ADMIN_IDS', '123456789').split(',') if id.strip()]
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://your-app.onrender.com')  # Your Render app URL
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-webhook-secret')  # Optional: for security
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://your-app.onrender.com')
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-webhook-secret')
 
-# Supabase Configuration
-SUPABASE_URL = os.environ.get('SUPABASE_URL', 'your_supabase_url')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'your_supabase_key')
-SUPABASE_DB_URL = os.environ.get('DATABASE_URL', 'your_database_url')
+# Database Configuration
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://user:pass@localhost:5432/db')
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Initialize bot
 bot = TeleBot(BOT_TOKEN)
@@ -68,8 +67,8 @@ class UserSession:
         self.email_variations = []
         self.passwords = []
         self.fullnames = []
-        self.accounts_data = {}  # Store temporary account data
-        self.completed_accounts = []  # Store completed accounts
+        self.accounts_data = {}
+        self.completed_accounts = []
         self.current_account_index = 0
         self.waiting_for_otp = False
         self.otp_account_num = None
@@ -77,11 +76,25 @@ class UserSession:
         self.username = None
         self.join_date = time.time()
 
-def init_database():
-    """Initialize database tables in Supabase"""
+# ==================== DATABASE FUNCTIONS ====================
+
+def get_db_connection():
+    """Get database connection"""
     try:
-        # Create tables using Supabase SQL or direct PostgreSQL connection
-        conn = psycopg2.connect(SUPABASE_DB_URL)
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        return None
+
+def init_database():
+    """Initialize database tables"""
+    conn = get_db_connection()
+    if not conn:
+        logger.error(f"{red}❌ Failed to connect to database{end}")
+        return False
+    
+    try:
         cur = conn.cursor()
         
         # Create users table
@@ -110,7 +123,7 @@ def init_database():
             )
         """)
         
-        # Create accounts table to track created Instagram accounts
+        # Create instagram_accounts table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS instagram_accounts (
                 id SERIAL PRIMARY KEY,
@@ -119,22 +132,26 @@ def init_database():
                 username TEXT,
                 password TEXT,
                 fullname TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                cookies TEXT,
                 account_number INTEGER,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
             )
         """)
         
-        # Create admins table
+        # Create admin_logs table
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS admins (
-                user_id BIGINT PRIMARY KEY,
-                added_by BIGINT,
-                added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id SERIAL PRIMARY KEY,
+                admin_id BIGINT,
+                action_type TEXT,
+                target_user_id BIGINT,
+                details JSONB,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
-        # Create webhook_logs table for monitoring
+        # Create webhook_logs table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS webhook_logs (
                 id SERIAL PRIMARY KEY,
@@ -146,139 +163,100 @@ def init_database():
             )
         """)
         
+        # Create indexes
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_approved ON users(is_approved)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_users(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_user_id ON instagram_accounts(user_id)")
+        
         conn.commit()
         cur.close()
         conn.close()
         
         logger.info(f"{green}✅ Database initialized successfully{end}")
-        
-        # Verify Supabase connection
-        try:
-            supabase.table('users').select('*').limit(1).execute()
-            logger.info(f"{green}✅ Supabase connection successful{end}")
-        except Exception as e:
-            logger.warning(f"{yellow}⚠️ Supabase REST connection warning: {e}{end}")
+        return True
         
     except Exception as e:
         logger.error(f"{red}❌ Database initialization error: {e}{end}")
-        raise e
-
-def log_webhook_request(request):
-    """Log webhook requests for monitoring"""
-    try:
-        conn = psycopg2.connect(SUPABASE_DB_URL)
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO webhook_logs (ip_address, user_agent, event_type, status_code) VALUES (%s, %s, %s, %s)",
-            (request.remote_addr, request.user_agent.string, 'webhook_update', 200)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Error logging webhook: {e}")
-
-def verify_webhook_signature(request):
-    """Verify webhook signature for security (optional)"""
-    if not WEBHOOK_SECRET:
-        return True
-    
-    signature = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-    if not signature:
-        return False
-    
-    # Simple comparison - you can implement HMAC if needed
-    return signature == WEBHOOK_SECRET
-
-def setup_webhook():
-    """Setup webhook for the bot"""
-    try:
-        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        
-        # Remove any existing webhook
-        bot.remove_webhook()
-        time.sleep(1)
-        
-        # Set new webhook
-        if WEBHOOK_SECRET:
-            success = bot.set_webhook(
-                url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-                max_connections=40,
-                allowed_updates=['message', 'callback_query']
-            )
-        else:
-            success = bot.set_webhook(
-                url=webhook_url,
-                max_connections=40,
-                allowed_updates=['message', 'callback_query']
-            )
-        
-        if success:
-            webhook_info = bot.get_webhook_info()
-            logger.info(f"{green}✅ Webhook set successfully:{end}")
-            logger.info(f"   URL: {webhook_info.url}")
-            logger.info(f"   Pending updates: {webhook_info.pending_update_count}")
-            logger.info(f"   Max connections: {webhook_info.max_connections}")
-            return True
-        else:
-            logger.error(f"{red}❌ Failed to set webhook{end}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"{red}❌ Error setting webhook: {e}{end}")
         return False
 
 def get_user_from_db(user_id):
     """Get user from database"""
-    try:
-        response = supabase.table('users').select('*').eq('user_id', user_id).execute()
-        if response.data:
-            return response.data[0]
+    conn = get_db_connection()
+    if not conn:
         return None
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        return dict(user) if user else None
     except Exception as e:
-        logger.error(f"Error getting user from DB: {e}")
+        logger.error(f"Error getting user: {e}")
         return None
 
 def save_user_to_db(user_id, username, first_name, last_name='', is_approved=False, is_admin=False):
     """Save user to database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        data = {
-            'user_id': user_id,
-            'username': username,
-            'first_name': first_name,
-            'last_name': last_name,
-            'is_approved': is_approved,
-            'is_admin': is_admin,
-            'join_date': datetime.now().isoformat(),
-            'last_active': datetime.now().isoformat()
-        }
-        response = supabase.table('users').upsert(data).execute()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (user_id, username, first_name, last_name, is_approved, is_admin, join_date, last_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET 
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                last_name = EXCLUDED.last_name,
+                last_active = EXCLUDED.last_active
+        """, (user_id, username, first_name, last_name, is_approved, is_admin, datetime.now(), datetime.now()))
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
-        logger.error(f"Error saving user to DB: {e}")
+        logger.error(f"Error saving user: {e}")
         return False
 
 def update_user_last_active(user_id):
     """Update user's last active timestamp"""
+    conn = get_db_connection()
+    if not conn:
+        return
+    
     try:
-        supabase.table('users').update({
-            'last_active': datetime.now().isoformat()
-        }).eq('user_id', user_id).execute()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET last_active = %s WHERE user_id = %s", (datetime.now(), user_id))
+        conn.commit()
+        cur.close()
+        conn.close()
     except Exception as e:
         logger.error(f"Error updating last active: {e}")
 
 def add_pending_user(user_id, username, first_name):
     """Add user to pending approvals"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        data = {
-            'user_id': user_id,
-            'username': username,
-            'first_name': first_name,
-            'request_date': datetime.now().isoformat(),
-            'status': 'pending'
-        }
-        response = supabase.table('pending_users').upsert(data).execute()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO pending_users (user_id, username, first_name, request_date, status)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                request_date = EXCLUDED.request_date,
+                status = EXCLUDED.status
+        """, (user_id, username, first_name, datetime.now(), 'pending'))
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error adding pending user: {e}")
@@ -286,8 +264,16 @@ def add_pending_user(user_id, username, first_name):
 
 def remove_pending_user(user_id):
     """Remove user from pending approvals"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        supabase.table('pending_users').delete().eq('user_id', user_id).execute()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM pending_users WHERE user_id = %s", (user_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error removing pending user: {e}")
@@ -295,26 +281,44 @@ def remove_pending_user(user_id):
 
 def get_pending_users():
     """Get all pending users"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        response = supabase.table('pending_users').select('*').eq('status', 'pending').execute()
-        return response.data if response.data else []
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pending_users WHERE status = 'pending' ORDER BY request_date DESC")
+        users = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [dict(user) for user in users]
     except Exception as e:
         logger.error(f"Error getting pending users: {e}")
         return []
 
 def approve_user(user_id, approver_id):
     """Approve a user"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
+        cur = conn.cursor()
         # Update users table
-        supabase.table('users').update({
-            'is_approved': True
-        }).eq('user_id', user_id).execute()
+        cur.execute("UPDATE users SET is_approved = TRUE WHERE user_id = %s", (user_id,))
         
         # Remove from pending
-        remove_pending_user(user_id)
+        cur.execute("DELETE FROM pending_users WHERE user_id = %s", (user_id,))
         
-        # Log approval
-        logger.info(f"User {user_id} approved by {approver_id}")
+        # Log admin action
+        cur.execute("""
+            INSERT INTO admin_logs (admin_id, action_type, target_user_id, details, timestamp)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (approver_id, 'approve', user_id, json.dumps({'action': 'approve'}), datetime.now()))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error approving user: {e}")
@@ -322,13 +326,16 @@ def approve_user(user_id, approver_id):
 
 def reject_user(user_id):
     """Reject a user"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        # Update status in pending
-        supabase.table('pending_users').update({
-            'status': 'rejected'
-        }).eq('user_id', user_id).execute()
-        
-        logger.info(f"User {user_id} rejected")
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_users SET status = 'rejected' WHERE user_id = %s", (user_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error rejecting user: {e}")
@@ -336,7 +343,7 @@ def reject_user(user_id):
 
 def is_user_approved(user_id):
     """Check if user is approved"""
-    # First check if admin (from environment)
+    # First check if admin
     if user_id in ADMIN_IDS:
         return True
     
@@ -348,26 +355,36 @@ def is_user_approved(user_id):
 
 def save_instagram_account(user_id, account_data):
     """Save created Instagram account to database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        data = {
-            'user_id': user_id,
-            'email': account_data['email'],
-            'username': account_data['username'],
-            'password': account_data['password'],
-            'fullname': account_data['fullname'],
-            'account_number': account_data['account_num'],
-            'created_at': datetime.now().isoformat()
-        }
-        response = supabase.table('instagram_accounts').insert(data).execute()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO instagram_accounts (user_id, email, username, password, fullname, cookies, account_number, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            user_id, 
+            account_data['email'], 
+            account_data['username'], 
+            account_data['password'], 
+            account_data['fullname'],
+            account_data.get('cookies', ''),
+            account_data['account_num'],
+            datetime.now()
+        ))
         
         # Update user's total accounts count
-        user = get_user_from_db(user_id)
-        if user:
-            current_total = user.get('total_accounts_created', 0)
-            supabase.table('users').update({
-                'total_accounts_created': current_total + 1
-            }).eq('user_id', user_id).execute()
+        cur.execute("""
+            UPDATE users 
+            SET total_accounts_created = total_accounts_created + 1 
+            WHERE user_id = %s
+        """, (user_id,))
         
+        conn.commit()
+        cur.close()
+        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error saving Instagram account: {e}")
@@ -375,18 +392,27 @@ def save_instagram_account(user_id, account_data):
 
 def get_user_stats(user_id):
     """Get statistics for a user"""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    
     try:
-        # Get user info
-        user = get_user_from_db(user_id)
+        cur = conn.cursor()
         
-        # Get accounts created
-        accounts_response = supabase.table('instagram_accounts').select('*').eq('user_id', user_id).execute()
-        accounts = accounts_response.data if accounts_response.data else []
+        # Get user info
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cur.fetchone()
+        
+        # Get accounts count
+        cur.execute("SELECT COUNT(*) as count FROM instagram_accounts WHERE user_id = %s", (user_id,))
+        count = cur.fetchone()
+        
+        cur.close()
+        conn.close()
         
         return {
-            'user': user,
-            'total_accounts': len(accounts),
-            'accounts': accounts
+            'user': dict(user) if user else None,
+            'total_accounts': count['count'] if count else 0
         }
     except Exception as e:
         logger.error(f"Error getting user stats: {e}")
@@ -394,26 +420,42 @@ def get_user_stats(user_id):
 
 def get_bot_stats():
     """Get overall bot statistics"""
+    conn = get_db_connection()
+    if not conn:
+        return {
+            'total_users': 0,
+            'approved_users': 0,
+            'pending_users': 0,
+            'total_instagram_accounts': 0,
+            'admins': len(ADMIN_IDS)
+        }
+    
     try:
+        cur = conn.cursor()
+        
         # Total users
-        users_response = supabase.table('users').select('*', count='exact').execute()
-        total_users = users_response.count if hasattr(users_response, 'count') else len(users_response.data)
+        cur.execute("SELECT COUNT(*) as count FROM users")
+        total_users = cur.fetchone()['count']
         
         # Approved users
-        approved_response = supabase.table('users').select('*', count='exact').eq('is_approved', True).execute()
-        approved_users = approved_response.count if hasattr(approved_response, 'count') else len(approved_response.data)
+        cur.execute("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
+        approved_users = cur.fetchone()['count']
         
         # Pending users
-        pending = len(get_pending_users())
+        cur.execute("SELECT COUNT(*) as count FROM pending_users WHERE status = 'pending'")
+        pending_users = cur.fetchone()['count']
         
-        # Total Instagram accounts created
-        accounts_response = supabase.table('instagram_accounts').select('*', count='exact').execute()
-        total_accounts = accounts_response.count if hasattr(accounts_response, 'count') else len(accounts_response.data)
+        # Total Instagram accounts
+        cur.execute("SELECT COUNT(*) as count FROM instagram_accounts")
+        total_accounts = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
         
         return {
             'total_users': total_users,
             'approved_users': approved_users,
-            'pending_users': pending,
+            'pending_users': pending_users,
             'total_instagram_accounts': total_accounts,
             'admins': len(ADMIN_IDS)
         }
@@ -426,6 +468,26 @@ def get_bot_stats():
             'total_instagram_accounts': 0,
             'admins': len(ADMIN_IDS)
         }
+
+def log_webhook_request(request):
+    """Log webhook requests for monitoring"""
+    conn = get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO webhook_logs (ip_address, user_agent, event_type, status_code, timestamp)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (request.remote_addr, request.user_agent.string, 'webhook', 200, datetime.now()))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error logging webhook: {e}")
+
+# ==================== UTILITY FUNCTIONS ====================
 
 def generate_password(length=12):
     characters = string.ascii_letters + string.digits + "!@#$%^&*"
@@ -459,8 +521,6 @@ def generate_gmail_variations(base_email, count=4):
     
     if '@gmail.com' not in base_email.lower():
         return [base_email] * count
-    
-    local_part = base_email.split('@')[0]
     
     variations = [
         base_email,
@@ -507,6 +567,8 @@ def set_bio(cookies_dict, first_name, username, retries=3):
         return False
     except Exception as e:
         return False
+
+# ==================== INSTAGRAM ACCOUNT CREATION ====================
 
 def start_account_creation(user_id, email, password, fullname, account_num):
     """Start the account creation process and return temporary data"""
@@ -735,6 +797,8 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
         bot.send_message(user_id, f"❌ Account {account_num}: Error: {str(e)}")
         return None
 
+# ==================== MENU FUNCTIONS ====================
+
 def create_main_menu():
     """Create main menu keyboard"""
     markup = InlineKeyboardMarkup(row_width=2)
@@ -766,15 +830,51 @@ def create_user_approval_keyboard(user_id, username):
     )
     return markup
 
-# Webhook endpoint
+# ==================== WEBHOOK SETUP ====================
+
+def setup_webhook():
+    """Setup webhook for the bot"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        
+        # Remove any existing webhook
+        bot.remove_webhook()
+        time.sleep(1)
+        
+        # Set new webhook
+        if WEBHOOK_SECRET:
+            success = bot.set_webhook(
+                url=webhook_url,
+                secret_token=WEBHOOK_SECRET,
+                max_connections=40,
+                allowed_updates=['message', 'callback_query']
+            )
+        else:
+            success = bot.set_webhook(
+                url=webhook_url,
+                max_connections=40,
+                allowed_updates=['message', 'callback_query']
+            )
+        
+        if success:
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"{green}✅ Webhook set successfully:{end}")
+            logger.info(f"   URL: {webhook_info.url}")
+            logger.info(f"   Pending updates: {webhook_info.pending_update_count}")
+            return True
+        else:
+            logger.error(f"{red}❌ Failed to set webhook{end}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"{red}❌ Error setting webhook: {e}{end}")
+        return False
+
+# ==================== FLASK ROUTES ====================
+
 @app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     """Handle incoming webhook updates from Telegram"""
-    # Verify signature if secret is set
-    if not verify_webhook_signature(request):
-        logger.warning(f"Invalid webhook signature from {request.remote_addr}")
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     # Log the request
     log_webhook_request(request)
     
@@ -790,8 +890,6 @@ def webhook():
         
         # Process the update
         update = Update.de_json(update_data)
-        
-        # Handle the update with the bot
         bot.process_new_updates([update])
         
         return jsonify({'status': 'ok'}), 200
@@ -800,18 +898,16 @@ def webhook():
         logger.error(f"Error processing webhook update: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Health check endpoint for Render
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'webhook_url': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
+        'python_version': sys.version,
         'active_sessions': len(user_sessions)
     }), 200
 
-# Root endpoint
 @app.route('/', methods=['GET'])
 def home():
     """Home page"""
@@ -819,11 +915,9 @@ def home():
         'name': 'Instagram Account Creator Bot',
         'version': '2.0',
         'status': 'running',
-        'webhook': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
-        'documentation': 'Use Telegram to interact with this bot'
+        'python_version': sys.version.split()[0]
     }), 200
 
-# Webhook info endpoint
 @app.route('/webhook-info', methods=['GET'])
 def webhook_info():
     """Get current webhook information"""
@@ -839,7 +933,8 @@ def webhook_info():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Bot message handlers
+# ==================== BOT MESSAGE HANDLERS ====================
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.chat.id
@@ -991,10 +1086,10 @@ def check_status(message):
     else:
         # Get stats from database
         stats = get_user_stats(user_id)
-        if stats:
+        if stats and stats['user']:
             status_text = f"📊 *Your Statistics*\n\n"
             status_text += f"Total Accounts Created: {stats['total_accounts']}\n"
-            status_text += f"Member Since: {stats['user'].get('join_date', 'N/A')[:10] if stats['user'] else 'N/A'}\n"
+            status_text += f"Member Since: {stats['user'].get('join_date', 'N/A')[:10]}\n"
             bot.reply_to(message, status_text, parse_mode='Markdown', reply_markup=create_main_menu())
         else:
             bot.reply_to(message, "❌ No active session. Use /menu to start.", reply_markup=create_main_menu())
@@ -1031,9 +1126,8 @@ def handle_callback(call):
         user_sessions[user_id].step = 'waiting_for_gmail'
     
     elif data == "status":
-        # Create a new message instead of editing
         bot.delete_message(user_id, call.message.message_id)
-        # We need to simulate a message object
+        # Create a fake message object
         class FakeMessage:
             def __init__(self, chat_id):
                 self.chat = type('Chat', (), {'id': chat_id})()
@@ -1067,10 +1161,6 @@ def handle_callback(call):
                              parse_mode='Markdown', reply_markup=create_main_menu())
     
     elif data == "profile":
-        if user_id not in user_sessions:
-            user_sessions[user_id] = UserSession(user_id)
-        
-        session = user_sessions[user_id]
         stats = get_user_stats(user_id)
         
         profile_text = f"""
@@ -1163,33 +1253,29 @@ def handle_callback(call):
             text += f"📝 {user['first_name']}\n"
             text += f"⏰ {user['request_date'][:19]}\n\n"
         
-        # Split into multiple messages if too long
-        if len(text) > 3500:
-            bot.send_message(user_id, text[:3500], parse_mode='Markdown')
-            if len(text) > 3500:
-                bot.send_message(user_id, text[3500:7000], parse_mode='Markdown')
-        else:
-            bot.edit_message_text(text, user_id, call.message.message_id, 
-                                 parse_mode='Markdown', reply_markup=create_admin_menu())
+        bot.edit_message_text(text, user_id, call.message.message_id, 
+                             parse_mode='Markdown', reply_markup=create_admin_menu())
     
     elif data == "admin_approved":
         if user_id not in ADMIN_IDS:
             bot.answer_callback_query(call.id, "❌ Admin only!")
             return
         
-        # Get approved users from database
-        response = supabase.table('users').select('*').eq('is_approved', True).execute()
-        approved = response.data if response.data else []
+        # Get approved users count
+        conn = get_db_connection()
+        approved_count = 0
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
+                approved_count = cur.fetchone()['count']
+                cur.close()
+                conn.close()
+            except:
+                pass
         
-        text = "✅ *Approved Users*\n\n"
-        text += f"Total: {len(approved)}\n\n"
-        
-        # Show first 20 approved users
-        for i, user in enumerate(approved[:20]):
-            text += f"{i+1}. `{user['user_id']}` - @{user['username']}\n"
-        
-        if len(approved) > 20:
-            text += f"\n... and {len(approved) - 20} more"
+        text = f"✅ *Approved Users*\n\nTotal: {approved_count}\n\n"
+        text += "Use /admin to manage users"
         
         bot.edit_message_text(text, user_id, call.message.message_id, 
                              parse_mode='Markdown', reply_markup=create_admin_menu())
@@ -1208,13 +1294,12 @@ def handle_callback(call):
 ✅ Approved: {stats['approved_users']}
 ⏳ Pending: {stats['pending_users']}
 👑 Admins: {stats['admins']}
-📱 Instagram Accounts Created: {stats['total_instagram_accounts']}
+📱 Instagram Accounts: {stats['total_instagram_accounts']}
 🔄 Active Sessions: {len(user_sessions)}
 
 *System Info*
-🕒 Webhook URL: {WEBHOOK_URL}
-💾 Database: Supabase
-📦 Python Version: {sys.version.split()[0]}
+🐍 Python: {sys.version.split()[0]}
+💾 Database: PostgreSQL
         """
         
         bot.edit_message_text(stats_text, user_id, call.message.message_id, 
@@ -1461,7 +1546,12 @@ def send_credentials_file(user_id, session):
     bot.send_message(user_id, summary, parse_mode='Markdown', reply_markup=create_main_menu())
     
     # Clean up file
-    os.remove(filename)
+    try:
+        os.remove(filename)
+    except:
+        pass
+
+# ==================== MAIN ====================
 
 def start_webhook():
     """Start the Flask webhook server"""
@@ -1470,10 +1560,9 @@ def start_webhook():
         logger.error(f"{red}❌ Failed to setup webhook. Exiting...{end}")
         sys.exit(1)
     
-    # Get port from environment (Render sets PORT)
+    # Get port from environment
     port = int(os.environ.get('PORT', 5000))
     
-    # Start Flask server
     logger.info(f"{green}✅ Starting webhook server on port {port}{end}")
     logger.info(f"{cyan}🌐 Webhook URL: {WEBHOOK_URL}/webhook/{BOT_TOKEN}{end}")
     logger.info(f"{cyan}📊 Health check: {WEBHOOK_URL}/health{end}")
@@ -1490,18 +1579,16 @@ if __name__ == "__main__":
         
         if WEBHOOK_URL == 'https://your-app.onrender.com':
             logger.error(f"{red}❌ Please set your WEBHOOK_URL environment variable!{end}")
-            logger.error(f"{yellow}   It should be your Render app URL (e.g., https://your-app.onrender.com){end}")
             sys.exit(1)
         
-        if SUPABASE_URL == 'your_supabase_url' or SUPABASE_KEY == 'your_supabase_key':
-            logger.warning(f"{yellow}⚠️ Supabase credentials not set. Some features may not work.{end}")
+        if DATABASE_URL == 'postgresql://user:pass@localhost:5432/db':
+            logger.error(f"{red}❌ Please set your DATABASE_URL environment variable!{end}")
+            sys.exit(1)
         
         # Initialize database
-        try:
-            init_database()
-        except Exception as e:
-            logger.error(f"{red}❌ Database initialization failed: {e}{end}")
-            logger.warning(f"{yellow}Continuing without database...{end}")
+        if not init_database():
+            logger.error(f"{red}❌ Database initialization failed. Exiting...{end}")
+            sys.exit(1)
         
         # Test bot connection
         try:
@@ -1511,15 +1598,11 @@ if __name__ == "__main__":
             logger.info(f"{yellow}👑 Admin IDs: {ADMIN_IDS}{end}")
             
             # Test database connection
-            try:
-                stats = get_bot_stats()
-                logger.info(f"{green}✅ Database connected: {stats['total_users']} users{end}")
-            except Exception as e:
-                logger.warning(f"{yellow}⚠️ Database connection warning: {e}{end}")
+            stats = get_bot_stats()
+            logger.info(f"{green}✅ Database connected: {stats['total_users']} users{end}")
                 
         except Exception as e:
             logger.error(f"{red}❌ Failed to connect: {e}{end}")
-            logger.error(f"{yellow}Please check your bot token{end}")
             sys.exit(1)
         
         # Start webhook server
@@ -1527,7 +1610,6 @@ if __name__ == "__main__":
         
     except KeyboardInterrupt:
         logger.info(f"\n{red}❌ Bot stopped by user{end}")
-        # Remove webhook on exit
         try:
             bot.remove_webhook()
             logger.info(f"{green}✅ Webhook removed{end}")
