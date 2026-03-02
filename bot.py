@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Instagram Account Creator Bot - Working with Python 3.14.3
-Using pg8000 for PostgreSQL connection (pure Python, no compilation needed)
+Instagram Account Creator Bot - Complete Working Version
+Compatible with Python 3.14.3 on Render
 """
 
 import requests
@@ -15,11 +15,10 @@ from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, U
 from flask import Flask, request, jsonify
 import sys
 import pg8000
-from pg8000.native import Connection, DatabaseError
+from pg8000.native import Connection
 from datetime import datetime
 import logging
 import threading
-from functools import wraps
 
 # Set up logging
 logging.basicConfig(
@@ -28,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Colors for console output (optional)
+# Colors for console output
 red = '\033[91m'
 green = '\033[92m'
 yellow = '\033[93m'
@@ -39,14 +38,22 @@ white = '\033[97m'
 bold = '\033[1m'
 end = '\033[0m'
 
-# Bot Configuration - Use environment variables
-BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-ADMIN_IDS = [int(id.strip()) for id in os.environ.get('ADMIN_IDS', '123456789').split(',') if id.strip()]
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://your-app.onrender.com')
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-webhook-secret')
+# ==================== CONFIGURATION ====================
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not BOT_TOKEN:
+    logger.error(f"{red}❌ BOT_TOKEN environment variable not set!{end}")
+    sys.exit(1)
 
-# Database Configuration
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://user:pass@localhost:5432/db')
+ADMIN_IDS = [int(id.strip()) for id in os.environ.get('ADMIN_IDS', '').split(',') if id.strip()]
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+if not WEBHOOK_URL:
+    logger.error(f"{red}❌ WEBHOOK_URL environment variable not set!{end}")
+    sys.exit(1)
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    logger.error(f"{red}❌ DATABASE_URL environment variable not set!{end}")
+    sys.exit(1)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -54,11 +61,12 @@ app = Flask(__name__)
 # Initialize bot
 bot = TeleBot(BOT_TOKEN)
 
-# Store user sessions in memory (temporary)
+# Store user sessions in memory
 user_sessions = {}
 
-proxies = None  # Set if needed
+proxies = None
 
+# ==================== USER SESSION CLASS ====================
 class UserSession:
     def __init__(self, user_id):
         self.user_id = user_id
@@ -76,17 +84,13 @@ class UserSession:
         self.username = None
         self.join_date = time.time()
 
-# ==================== DATABASE FUNCTIONS WITH pg8000 ====================
-
+# ==================== DATABASE FUNCTIONS ====================
 def parse_db_url(url):
     """Parse PostgreSQL connection URL"""
-    # Format: postgresql://user:password@host:port/database
     try:
-        # Remove protocol
         if '://' in url:
             url = url.split('://', 1)[1]
         
-        # Split authentication and host
         if '@' in url:
             auth, host_part = url.split('@', 1)
             if ':' in auth:
@@ -99,14 +103,12 @@ def parse_db_url(url):
             password = ''
             host_part = url
         
-        # Split host and database
         if '/' in host_part:
             host_port, database = host_part.split('/', 1)
         else:
             host_port = host_part
             database = 'postgres'
         
-        # Split host and port
         if ':' in host_port:
             host, port = host_port.split(':', 1)
             port = int(port)
@@ -130,10 +132,8 @@ def get_db_connection():
     try:
         conn_params = parse_db_url(DATABASE_URL)
         if not conn_params:
-            logger.error("Failed to parse DATABASE_URL")
             return None
         
-        # Connect to database
         conn = Connection(
             user=conn_params['user'],
             password=conn_params['password'],
@@ -145,7 +145,6 @@ def get_db_connection():
         
         # Test connection
         conn.run("SELECT 1")
-        
         return conn
     except Exception as e:
         logger.error(f"Database connection error: {e}")
@@ -335,23 +334,6 @@ def add_pending_user(user_id, username, first_name):
         if conn:
             conn.close()
 
-def remove_pending_user(user_id):
-    """Remove user from pending approvals"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        conn.run("DELETE FROM pending_users WHERE user_id = $1", user_id)
-        return True
-    except Exception as e:
-        logger.error(f"Error removing pending user: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
 def get_pending_users():
     """Get all pending users"""
     conn = None
@@ -380,13 +362,8 @@ def approve_user(user_id, approver_id):
         if not conn:
             return False
         
-        # Update users table
         conn.run("UPDATE users SET is_approved = TRUE WHERE user_id = $1", user_id)
-        
-        # Remove from pending
         conn.run("DELETE FROM pending_users WHERE user_id = $1", user_id)
-        
-        # Log admin action
         conn.run("""
             INSERT INTO admin_logs (admin_id, action_type, target_user_id, details, timestamp)
             VALUES ($1, $2, $3, $4, $5)
@@ -419,11 +396,9 @@ def reject_user(user_id):
 
 def is_user_approved(user_id):
     """Check if user is approved"""
-    # First check if admin
     if user_id in ADMIN_IDS:
         return True
     
-    # Then check database
     user = get_user_from_db(user_id)
     if user:
         return user.get('is_approved', False)
@@ -443,7 +418,6 @@ def save_instagram_account(user_id, account_data):
         """, user_id, account_data['email'], account_data['username'], account_data['password'], 
             account_data['fullname'], account_data.get('cookies', ''), account_data['account_num'], datetime.now())
         
-        # Update user's total accounts count
         conn.run("""
             UPDATE users 
             SET total_accounts_created = total_accounts_created + 1 
@@ -466,14 +440,12 @@ def get_user_stats(user_id):
         if not conn:
             return None
         
-        # Get user info
         user_result = conn.run("SELECT * FROM users WHERE user_id = $1", user_id)
         user = None
         if user_result and len(user_result) > 0:
             columns = [col['name'] for col in conn.columns]
             user = dict_from_row(user_result[0], columns)
         
-        # Get accounts count
         count_result = conn.run("SELECT COUNT(*) as count FROM instagram_accounts WHERE user_id = $1", user_id)
         count = count_result[0][0] if count_result else 0
         
@@ -502,19 +474,15 @@ def get_bot_stats():
                 'admins': len(ADMIN_IDS)
             }
         
-        # Total users
         total_result = conn.run("SELECT COUNT(*) as count FROM users")
         total_users = total_result[0][0] if total_result else 0
         
-        # Approved users
         approved_result = conn.run("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
         approved_users = approved_result[0][0] if approved_result else 0
         
-        # Pending users
         pending_result = conn.run("SELECT COUNT(*) as count FROM pending_users WHERE status = 'pending'")
         pending_users = pending_result[0][0] if pending_result else 0
         
-        # Total Instagram accounts
         accounts_result = conn.run("SELECT COUNT(*) as count FROM instagram_accounts")
         total_accounts = accounts_result[0][0] if accounts_result else 0
         
@@ -538,26 +506,7 @@ def get_bot_stats():
         if conn:
             conn.close()
 
-def log_webhook_request(request):
-    """Log webhook requests for monitoring"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        
-        conn.run("""
-            INSERT INTO webhook_logs (ip_address, user_agent, event_type, status_code, timestamp)
-            VALUES ($1, $2, $3, $4, $5)
-        """, request.remote_addr, request.user_agent.string, 'webhook', 200, datetime.now())
-    except Exception as e:
-        logger.error(f"Error logging webhook: {e}")
-    finally:
-        if conn:
-            conn.close()
-
 # ==================== UTILITY FUNCTIONS ====================
-
 def generate_password(length=12):
     characters = string.ascii_letters + string.digits + "!@#$%^&*"
     return ''.join(random.choice(characters) for i in range(length))
@@ -585,11 +534,11 @@ def modify_gmail_for_dot_trick(base_email, dot_positions):
     
     return ''.join(modified_local) + '@' + domain
 
-def generate_gmail_variations(base_email, count=4):
+def generate_gmail_variations(base_email):
     variations = []
     
     if '@gmail.com' not in base_email.lower():
-        return [base_email] * count
+        return [base_email] * 4
     
     variations = [
         base_email,
@@ -600,7 +549,7 @@ def generate_gmail_variations(base_email, count=4):
     
     return variations
 
-def set_bio(cookies_dict, first_name, username, retries=3):
+def set_bio(cookies_dict, first_name, username):
     try:
         sessionid = cookies_dict.get('sessionid', '')
         csrftoken = cookies_dict.get('csrftoken', '')
@@ -627,20 +576,16 @@ def set_bio(cookies_dict, first_name, username, retries=3):
             'username': username,
             'jazoest': '21906'
         }
-        for attempt in range(1, retries + 1):
-            resp = requests.post(url, headers=headers, data=data, proxies=proxies)
-            if resp.status_code == 200 and '"status":"ok"' in resp.text:
-                return True
-            else:
-                time.sleep(2)
-        return False
+        
+        resp = requests.post(url, headers=headers, data=data, proxies=proxies)
+        return resp.status_code == 200 and '"status":"ok"' in resp.text
     except Exception as e:
+        logger.error(f"Error setting bio: {e}")
         return False
 
 # ==================== INSTAGRAM ACCOUNT CREATION ====================
-
 def start_account_creation(user_id, email, password, fullname, account_num):
-    """Start the account creation process and return temporary data"""
+    """Start the account creation process"""
     
     encryptedPassword = f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}'
     
@@ -767,7 +712,6 @@ def start_account_creation(user_id, email, password, fullname, account_num):
         bot.send_message(user_id, f"❌ Account {account_num}: Failed to send verification email")
         return None
 
-    # Return data needed for OTP verification
     return {
         'account_num': account_num,
         'email': email,
@@ -803,7 +747,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
             signupCode = jsonData.get("signup_code", "")
             bot.send_message(user_id, f"✅ Account {account_num}: OTP verification successful")
         else:
-            bot.send_message(user_id, f"❌ Account {account_num}: Invalid OTP code. Please try again.")
+            bot.send_message(user_id, f"❌ Account {account_num}: Invalid OTP code")
             return None
 
         time.sleep(random.uniform(2, 4))
@@ -837,12 +781,10 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
         if '"account_created":true' in response.text:
             bot.send_message(user_id, f"🎉 Account {account_num}: Creation successful!")
             
-            # Update cookies from response
             response_cookies = dict(response.cookies)
             account_data['cookiesData'].update(response_cookies)
             cookies_str = format_cookies(account_data['cookiesData'])
             
-            # Set bio
             set_bio(account_data['cookiesData'], account_data['fullname'].split()[0], account_data['username_suggested'])
             
             result = {
@@ -854,9 +796,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
                 'cookies': cookies_str
             }
             
-            # Save to database
             save_instagram_account(user_id, result)
-            
             return result
         else:
             bot.send_message(user_id, f"❌ Account {account_num}: Final creation failed")
@@ -867,9 +807,7 @@ def complete_account_with_otp(user_id, account_num, otp_code, account_data):
         return None
 
 # ==================== MENU FUNCTIONS ====================
-
 def create_main_menu():
-    """Create main menu keyboard"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📧 Create Accounts", callback_data="create"),
@@ -880,7 +818,6 @@ def create_main_menu():
     return markup
 
 def create_admin_menu():
-    """Create admin menu keyboard"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("👥 Pending Users", callback_data="admin_pending"),
@@ -891,7 +828,6 @@ def create_admin_menu():
     return markup
 
 def create_user_approval_keyboard(user_id, username):
-    """Create keyboard for approving/rejecting users"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton(f"✅ Approve @{username}", callback_data=f"approve_{user_id}"),
@@ -899,63 +835,55 @@ def create_user_approval_keyboard(user_id, username):
     )
     return markup
 
-# ==================== WEBHOOK SETUP ====================
-
-def setup_webhook():
-    """Setup webhook for the bot"""
-    try:
-        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        
-        # Remove any existing webhook
-        bot.remove_webhook()
-        time.sleep(1)
-        
-        # Set new webhook
-        if WEBHOOK_SECRET:
-            success = bot.set_webhook(
-                url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-                max_connections=40,
-                allowed_updates=['message', 'callback_query']
-            )
-        else:
-            success = bot.set_webhook(
-                url=webhook_url,
-                max_connections=40,
-                allowed_updates=['message', 'callback_query']
-            )
-        
-        if success:
-            webhook_info = bot.get_webhook_info()
-            logger.info(f"{green}✅ Webhook set successfully:{end}")
-            logger.info(f"   URL: {webhook_info.url}")
-            logger.info(f"   Pending updates: {webhook_info.pending_update_count}")
-            return True
-        else:
-            logger.error(f"{red}❌ Failed to set webhook{end}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"{red}❌ Error setting webhook: {e}{end}")
-        return False
-
 # ==================== FLASK ROUTES ====================
+@app.route('/', methods=['GET'])
+def home():
+    """Home page"""
+    return jsonify({
+        'name': 'Instagram Account Creator Bot',
+        'version': '2.0',
+        'status': 'running',
+        'bot_username': 'AutoEarnX_Insta_Creator_Self_Bot',
+        'python_version': sys.version.split()[0]
+    }), 200
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'active_sessions': len(user_sessions)
+    }), 200
+
+@app.route('/test-webhook', methods=['GET', 'POST'])
+def test_webhook():
+    """Test endpoint to verify webhook routing"""
+    return jsonify({
+        'status': 'ok',
+        'method': request.method,
+        'message': 'Test webhook endpoint is working',
+        'bot_token_configured': bool(BOT_TOKEN)
+    }), 200
 
 @app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 def webhook():
-    """Handle incoming webhook updates from Telegram"""
-    # Log the request
-    log_webhook_request(request)
+    """Main webhook endpoint for Telegram updates"""
+    logger.info(f"🔔 Webhook received request from {request.remote_addr}")
+    logger.info(f"📦 Headers: {dict(request.headers)}")
     
     try:
-        # Get the update from Telegram
+        # Get the raw data for debugging
+        raw_data = request.get_data(as_text=True)
+        logger.info(f"📦 Raw data: {raw_data[:200]}...")  # Log first 200 chars
+        
+        # Parse JSON
         update_data = request.get_json()
-        
         if not update_data:
-            logger.error("No update data received")
-            return jsonify({'error': 'No data'}), 400
+            logger.error("No JSON data received")
+            return jsonify({'error': 'No JSON data'}), 400
         
-        logger.debug(f"Received update: {update_data.get('update_id')}")
+        logger.info(f"✅ Parsed update ID: {update_data.get('update_id')}")
         
         # Process the update
         update = Update.de_json(update_data)
@@ -964,32 +892,12 @@ def webhook():
         return jsonify({'status': 'ok'}), 200
         
     except Exception as e:
-        logger.error(f"Error processing webhook update: {e}")
+        logger.error(f"❌ Error processing webhook: {e}")
         return jsonify({'error': str(e)}), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'python_version': sys.version,
-        'active_sessions': len(user_sessions)
-    }), 200
-
-@app.route('/', methods=['GET'])
-def home():
-    """Home page"""
-    return jsonify({
-        'name': 'Instagram Account Creator Bot',
-        'version': '2.0',
-        'status': 'running',
-        'python_version': sys.version.split()[0]
-    }), 200
 
 @app.route('/webhook-info', methods=['GET'])
 def webhook_info():
-    """Get current webhook information"""
+    """Get current webhook information from Telegram"""
     try:
         webhook_info = bot.get_webhook_info()
         return jsonify({
@@ -1003,7 +911,6 @@ def webhook_info():
         return jsonify({'error': str(e)}), 500
 
 # ==================== BOT MESSAGE HANDLERS ====================
-
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.chat.id
@@ -1011,18 +918,18 @@ def send_welcome(message):
     first_name = message.from_user.first_name or "User"
     last_name = message.from_user.last_name or ""
     
-    # Save user to database if not exists
+    logger.info(f"📨 /start from user {user_id} (@{username})")
+    
+    # Save user to database
     user = get_user_from_db(user_id)
     if not user:
         save_user_to_db(user_id, username, first_name, last_name, 
                        is_approved=(user_id in ADMIN_IDS), 
                        is_admin=(user_id in ADMIN_IDS))
     
-    # Update last active
     update_user_last_active(user_id)
     
     if is_user_approved(user_id):
-        # Approved user - show main menu
         if user_id not in user_sessions:
             user_sessions[user_id] = UserSession(user_id)
         user_sessions[user_id].username = username
@@ -1041,7 +948,6 @@ Welcome back! You are an approved user.
         bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=create_main_menu())
     
     elif user_id in ADMIN_IDS:
-        # Admin user - show admin menu
         welcome_text = """
 👑 *Admin Panel* 👑
 
@@ -1056,7 +962,6 @@ Welcome Administrator!
         bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=create_admin_menu())
     
     else:
-        # Check if already pending
         pending = get_pending_users()
         if any(p['user_id'] == user_id for p in pending):
             bot.reply_to(
@@ -1067,10 +972,8 @@ Welcome Administrator!
             )
             return
         
-        # Add to pending
         add_pending_user(user_id, username, first_name)
         
-        # Notify admins
         for admin_id in ADMIN_IDS:
             try:
                 admin_msg = f"""
@@ -1096,8 +999,7 @@ Please approve or reject this user:
         bot.reply_to(
             message,
             "⏳ *Your request has been sent to the admins for approval.*\n\n"
-            "Please wait for an admin to approve your access. "
-            "You'll be notified once your request is processed.",
+            "Please wait for an admin to approve your access.",
             parse_mode='Markdown'
         )
 
@@ -1106,7 +1008,7 @@ def show_menu(message):
     user_id = message.chat.id
     
     if not is_user_approved(user_id) and user_id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ You are not authorized to use this bot. Please use /start to request access.")
+        bot.reply_to(message, "❌ You are not authorized. Use /start to request access.")
         return
     
     update_user_last_active(user_id)
@@ -1121,19 +1023,19 @@ def cancel_operation(message):
     user_id = message.chat.id
     
     if not is_user_approved(user_id) and user_id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ You are not authorized to use this bot.")
+        bot.reply_to(message, "❌ You are not authorized.")
         return
     
     if user_id in user_sessions:
         del user_sessions[user_id]
-    bot.reply_to(message, "❌ Operation cancelled. Use /menu to return to main menu.")
+    bot.reply_to(message, "❌ Operation cancelled. Use /menu to return.")
 
 @bot.message_handler(commands=['status'])
 def check_status(message):
     user_id = message.chat.id
     
     if not is_user_approved(user_id) and user_id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ You are not authorized to use this bot.")
+        bot.reply_to(message, "❌ You are not authorized.")
         return
     
     update_user_last_active(user_id)
@@ -1153,7 +1055,6 @@ def check_status(message):
         
         bot.reply_to(message, status_text, parse_mode='Markdown', reply_markup=create_main_menu())
     else:
-        # Get stats from database
         stats = get_user_stats(user_id)
         if stats and stats['user']:
             status_text = f"📊 *Your Statistics*\n\n"
@@ -1168,6 +1069,7 @@ def handle_callback(call):
     user_id = call.from_user.id
     data = call.data
     
+    logger.info(f"📞 Callback from user {user_id}: {data}")
     update_user_last_active(user_id)
     
     if data == "main_menu":
@@ -1196,7 +1098,6 @@ def handle_callback(call):
     
     elif data == "status":
         bot.delete_message(user_id, call.message.message_id)
-        # Create a fake message object
         class FakeMessage:
             def __init__(self, chat_id):
                 self.chat = type('Chat', (), {'id': chat_id})()
@@ -1246,7 +1147,6 @@ def handle_callback(call):
         bot.edit_message_text(profile_text, user_id, call.message.message_id, 
                              parse_mode='Markdown', reply_markup=create_main_menu())
     
-    # Admin callbacks
     elif data.startswith("approve_") or data.startswith("reject_"):
         if user_id not in ADMIN_IDS:
             bot.answer_callback_query(call.id, "❌ Admin only!")
@@ -1257,7 +1157,6 @@ def handle_callback(call):
         
         if action == "approve":
             if approve_user(target_id, user_id):
-                # Notify user
                 try:
                     bot.send_message(
                         target_id,
@@ -1279,7 +1178,6 @@ def handle_callback(call):
         
         elif action == "reject":
             if reject_user(target_id):
-                # Notify user
                 try:
                     bot.send_message(
                         target_id,
@@ -1330,12 +1228,8 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ Admin only!")
             return
         
-        # Get approved users count
         stats = get_bot_stats()
-        
-        text = f"✅ *Approved Users*\n\nTotal: {stats['approved_users']}\n\n"
-        text += "Use /admin to manage users"
-        
+        text = f"✅ *Approved Users*\n\nTotal: {stats['approved_users']}"
         bot.edit_message_text(text, user_id, call.message.message_id, 
                              parse_mode='Markdown', reply_markup=create_admin_menu())
     
@@ -1358,7 +1252,7 @@ def handle_callback(call):
 
 *System Info*
 🐍 Python: {sys.version.split()[0]}
-💾 Database: PostgreSQL (pg8000)
+💾 Database: PostgreSQL
         """
         
         bot.edit_message_text(stats_text, user_id, call.message.message_id, 
@@ -1369,76 +1263,61 @@ def handle_messages(message):
     user_id = message.chat.id
     text = message.text.strip()
     
-    # Check authorization
+    logger.info(f"📨 Message from user {user_id}: {text[:50]}...")
+    
     if not is_user_approved(user_id) and user_id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ You are not authorized to use this bot. Please use /start to request access.")
+        bot.reply_to(message, "❌ You are not authorized. Use /start to request access.")
         return
     
     update_user_last_active(user_id)
     
-    # Initialize session if not exists
     if user_id not in user_sessions:
         user_sessions[user_id] = UserSession(user_id)
         user_sessions[user_id].username = message.from_user.username or "NoUsername"
     
     session = user_sessions[user_id]
     
-    # Handle Gmail input
     if session.step == 'waiting_for_gmail':
         if '@' not in text or '.' not in text:
             bot.reply_to(message, "❌ Please send a valid email address!", reply_markup=create_main_menu())
             return
         
         session.base_email = text
-        session.email_variations = generate_gmail_variations(text, 4)
+        session.email_variations = generate_gmail_variations(text)
         session.passwords = [generate_password() for _ in range(4)]
         session.fullnames = [generate_fullname() for _ in range(4)]
         
-        # Show email variations
         variations_text = "📧 *Email variations that will be used:*\n\n"
         for i, email in enumerate(session.email_variations, 1):
             variations_text += f"Account {i}: `{email}`\n"
         
         variations_text += "\n🔄 Starting account creation process...\n"
-        variations_text += "You will receive OTP requests for each account one by one.\n"
-        variations_text += "Use /status to check progress at any time."
+        variations_text += "You will receive OTP requests for each account."
         
         bot.reply_to(message, variations_text, parse_mode='Markdown')
         
-        # Start first account
         session.step = 'creating_accounts'
         session.current_account_index = 0
         start_next_account(user_id)
     
-    # Handle OTP input
     elif session.step == 'creating_accounts' and session.waiting_for_otp:
         account_num = session.otp_account_num
         
-        # Get the account data for this OTP
         if account_num in session.accounts_data:
             account_data = session.accounts_data[account_num]
             
-            # Send typing indicator
             bot.send_chat_action(user_id, 'typing')
             
-            # Complete account creation with OTP
             result = complete_account_with_otp(user_id, account_num, text, account_data)
             
             if result:
                 session.completed_accounts.append(result)
-                
-                # Clear the temporary data
                 del session.accounts_data[account_num]
-                
-                # Clear waiting state
                 session.waiting_for_otp = False
                 session.otp_account_num = None
-                
-                # Check if we have more accounts to create
                 session.current_account_index += 1
                 
                 if session.current_account_index < session.total_accounts:
-                    # Small delay before starting next account
                     time.sleep(3)
                     bot.send_message(
                         user_id,
@@ -1448,42 +1327,23 @@ def handle_messages(message):
                     )
                     start_next_account(user_id)
                 else:
-                    # All accounts created, send file
-                    bot.send_message(
-                        user_id,
-                        f"✅ All {session.total_accounts} accounts processed!\n"
-                        f"Generating credentials file..."
-                    )
+                    bot.send_message(user_id, f"✅ All accounts processed! Generating file...")
                     send_credentials_file(user_id, session)
                     del user_sessions[user_id]
             else:
-                # OTP failed, ask again
                 session.waiting_for_otp = True
                 session.otp_account_num = account_num
                 bot.send_message(
                     user_id, 
                     f"❌ OTP verification failed for Account {account_num}.\n"
-                    f"Please send the correct OTP for Account {account_num}:"
+                    f"Please send the correct OTP:"
                 )
         else:
-            bot.send_message(user_id, "❌ Session error. Please start over with /start")
+            bot.send_message(user_id, "❌ Session error. Use /start", reply_markup=create_main_menu())
             del user_sessions[user_id]
     
-    # Handle unexpected messages
     else:
-        if session.step == 'creating_accounts':
-            bot.send_message(
-                user_id, 
-                f"❌ Please wait for the OTP request for Account {session.otp_account_num if session.otp_account_num else 'current'}.\n"
-                f"Use /status to check progress.",
-                reply_markup=create_main_menu()
-            )
-        else:
-            bot.send_message(
-                user_id, 
-                "❌ Please use the menu options.",
-                reply_markup=create_main_menu()
-            )
+        bot.send_message(user_id, "❌ Please use the menu options.", reply_markup=create_main_menu())
 
 def start_next_account(user_id):
     """Start creation of next account"""
@@ -1507,21 +1367,17 @@ def start_next_account(user_id):
         parse_mode='Markdown'
     )
     
-    # Send typing indicator
     bot.send_chat_action(user_id, 'typing')
     
-    # Start account creation
     result = start_account_creation(
         user_id, email, password, fullname, account_num
     )
     
     if result:
-        # Store the account data with account number as key
         session.accounts_data[account_num] = result
         session.waiting_for_otp = True
         session.otp_account_num = account_num
         
-        # Request OTP with clear formatting
         otp_request = f"""
 ⏳ *OTP REQUIRED for Account {account_num}*
 
@@ -1531,20 +1387,13 @@ def start_next_account(user_id):
 Please check your email and send me the OTP code:
         """
         
-        bot.send_message(
-            user_id,
-            otp_request,
-            parse_mode='Markdown'
-        )
+        bot.send_message(user_id, otp_request, parse_mode='Markdown')
     else:
-        # Account creation failed at initial stage
         bot.send_message(
             user_id,
-            f"❌ Account {account_num} creation failed at initial stage.\n"
-            f"Skipping to next account..."
+            f"❌ Account {account_num} creation failed.\nSkipping to next account..."
         )
         
-        # Move to next account
         session.current_account_index += 1
         if session.current_account_index < session.total_accounts:
             time.sleep(5)
@@ -1562,10 +1411,8 @@ def send_credentials_file(user_id, session):
         bot.send_message(user_id, "❌ No accounts were created successfully.")
         return
     
-    # Send typing indicator
     bot.send_chat_action(user_id, 'typing')
     
-    # Create credentials file
     filename = f"instagram_accounts_{user_id}_{int(time.time())}.txt"
     
     with open(filename, 'w', encoding='utf-8') as f:
@@ -1587,92 +1434,99 @@ def send_credentials_file(user_id, session):
         f.write("END OF FILE\n")
         f.write("=" * 60 + "\n")
     
-    # Send file to user
     with open(filename, 'rb') as f:
         bot.send_document(
             user_id, 
             f, 
-            caption=f"✅ *All {len(session.completed_accounts)} accounts created successfully!*\nHere's your credentials file.",
+            caption=f"✅ *All {len(session.completed_accounts)} accounts created successfully!*",
             parse_mode='Markdown',
             reply_markup=create_main_menu()
         )
     
-    # Also send summary
     summary = "📊 *CREATION SUMMARY*\n\n"
     for account in session.completed_accounts:
         summary += f"✅ Account {account['account_num']}: @{account['username']}\n"
     
     bot.send_message(user_id, summary, parse_mode='Markdown', reply_markup=create_main_menu())
     
-    # Clean up file
     try:
         os.remove(filename)
     except:
         pass
 
-# ==================== MAIN ====================
+# ==================== WEBHOOK SETUP ====================
+def setup_webhook():
+    """Setup webhook for the bot"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        
+        logger.info(f"📡 Setting webhook to: {webhook_url}")
+        
+        bot.remove_webhook()
+        time.sleep(1)
+        
+        success = bot.set_webhook(
+            url=webhook_url,
+            max_connections=40,
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True
+        )
+        
+        if success:
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"{green}✅ Webhook set successfully:{end}")
+            logger.info(f"   URL: {webhook_info.url}")
+            return True
+        else:
+            logger.error(f"{red}❌ Failed to set webhook{end}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"{red}❌ Error setting webhook: {e}{end}")
+        return False
 
-def start_webhook():
-    """Start the Flask webhook server"""
-    # Set webhook
+# ==================== MAIN ====================
+if __name__ == "__main__":
+    print(f"\n{cyan}{'='*60}{end}")
+    print(f"{cyan}🤖 Instagram Account Creator Bot Starting...{end}")
+    print(f"{cyan}{'='*60}{end}\n")
+    
+    # Check configuration
+    print(f"{blue}📋 Configuration:{end}")
+    print(f"   Bot Token: {green}{BOT_TOKEN[:10]}...{end}")
+    print(f"   Webhook URL: {green}{WEBHOOK_URL}{end}")
+    print(f"   Admin IDs: {green}{ADMIN_IDS}{end}")
+    print(f"   Database: {green}PostgreSQL (pg8000){end}\n")
+    
+    # Initialize database
+    print(f"{blue}📦 Initializing database...{end}")
+    if not init_database():
+        logger.error(f"{red}❌ Database initialization failed. Exiting...{end}")
+        sys.exit(1)
+    
+    # Test bot connection
+    try:
+        bot_info = bot.get_me()
+        print(f"{green}✅ Bot connected: @{bot_info.username}{end}")
+        print(f"{green}✅ Bot name: {bot_info.first_name}{end}\n")
+    except Exception as e:
+        logger.error(f"{red}❌ Failed to connect to Telegram: {e}{end}")
+        sys.exit(1)
+    
+    # Setup webhook
+    print(f"{blue}📡 Setting up webhook...{end}")
     if not setup_webhook():
-        logger.error(f"{red}❌ Failed to setup webhook. Exiting...{end}")
+        logger.error(f"{red}❌ Webhook setup failed. Exiting...{end}")
         sys.exit(1)
     
     # Get port from environment
     port = int(os.environ.get('PORT', 5000))
     
-    logger.info(f"{green}✅ Starting webhook server on port {port}{end}")
-    logger.info(f"{cyan}🌐 Webhook URL: {WEBHOOK_URL}/webhook/{BOT_TOKEN}{end}")
-    logger.info(f"{cyan}📊 Health check: {WEBHOOK_URL}/health{end}")
+    print(f"\n{green}✅ Bot is ready!{end}")
+    print(f"{cyan}🌐 Webhook URL: {WEBHOOK_URL}/webhook/{BOT_TOKEN}{end}")
+    print(f"{cyan}📊 Health check: {WEBHOOK_URL}/health{end}")
+    print(f"{cyan}🔧 Test endpoint: {WEBHOOK_URL}/test-webhook{end}")
+    print(f"{cyan}🚀 Server starting on port {port}...{end}\n")
     
     # Run Flask app
     app.run(host='0.0.0.0', port=port)
-
-if __name__ == "__main__":
-    try:
-        # Check if required environment variables are set
-        if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
-            logger.error(f"{red}❌ Please set your BOT_TOKEN environment variable!{end}")
-            sys.exit(1)
-        
-        if WEBHOOK_URL == 'https://your-app.onrender.com':
-            logger.error(f"{red}❌ Please set your WEBHOOK_URL environment variable!{end}")
-            sys.exit(1)
-        
-        if DATABASE_URL == 'postgresql://user:pass@localhost:5432/db':
-            logger.error(f"{red}❌ Please set your DATABASE_URL environment variable!{end}")
-            sys.exit(1)
-        
-        # Initialize database
-        if not init_database():
-            logger.error(f"{red}❌ Database initialization failed. Exiting...{end}")
-            sys.exit(1)
-        
-        # Test bot connection
-        try:
-            bot_info = bot.get_me()
-            logger.info(f"{green}✅ Bot connected: @{bot_info.username}{end}")
-            logger.info(f"{green}✅ Bot name: {bot_info.first_name}{end}")
-            logger.info(f"{yellow}👑 Admin IDs: {ADMIN_IDS}{end}")
-            
-            # Test database connection
-            stats = get_bot_stats()
-            logger.info(f"{green}✅ Database connected: {stats['total_users']} users{end}")
-                
-        except Exception as e:
-            logger.error(f"{red}❌ Failed to connect: {e}{end}")
-            sys.exit(1)
-        
-        # Start webhook server
-        start_webhook()
-        
-    except KeyboardInterrupt:
-        logger.info(f"\n{red}❌ Bot stopped by user{end}")
-        try:
-            bot.remove_webhook()
-            logger.info(f"{green}✅ Webhook removed{end}")
-        except:
-            pass
-    except Exception as e:
-        logger.error(f"\n{red}❌ An error occurred: {str(e)}{end}")
