@@ -844,16 +844,23 @@ def home():
         'version': '2.0',
         'status': 'running',
         'bot_username': 'AutoEarnX_Insta_Creator_Self_Bot',
-        'python_version': sys.version.split()[0]
+        'python_version': sys.version.split()[0],
+        'webhook_configured': True,
+        'test_endpoints': {
+            'health': '/health',
+            'test_webhook': '/test-webhook',
+            'webhook_info': '/webhook-info'
+        }
     }), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint for Render"""
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'active_sessions': len(user_sessions)
+        'active_sessions': len(user_sessions),
+        'database': 'connected' if get_db_connection() else 'disconnected'
     }), 200
 
 @app.route('/test-webhook', methods=['GET', 'POST'])
@@ -862,20 +869,37 @@ def test_webhook():
     return jsonify({
         'status': 'ok',
         'method': request.method,
-        'message': 'Test webhook endpoint is working',
-        'bot_token_configured': bool(BOT_TOKEN)
+        'message': 'Test endpoint is working',
+        'bot_token_configured': bool(BOT_TOKEN),
+        'webhook_url': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
+        'timestamp': datetime.now().isoformat()
     }), 200
 
-@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['GET', 'POST'])
 def webhook():
     """Main webhook endpoint for Telegram updates"""
-    logger.info(f"🔔 Webhook received request from {request.remote_addr}")
+    
+    # Handle GET requests (for testing/browser visits)
+    if request.method == 'GET':
+        return jsonify({
+            'status': 'webhook_active',
+            'message': 'This endpoint accepts POST requests from Telegram',
+            'bot_token': BOT_TOKEN[:15] + '...',
+            'expected_method': 'POST',
+            'how_to_test': 'Send a POST request with JSON data',
+            'telegram_webhook_info': f"{WEBHOOK_URL}/webhook-info",
+            'health_check': f"{WEBHOOK_URL}/health"
+        }), 200
+    
+    # Handle POST requests (actual Telegram updates)
+    logger.info(f"🔔 Webhook received POST request from {request.remote_addr}")
     logger.info(f"📦 Headers: {dict(request.headers)}")
     
     try:
-        # Get the raw data for debugging
+        # Get raw data for debugging
         raw_data = request.get_data(as_text=True)
-        logger.info(f"📦 Raw data: {raw_data[:200]}...")  # Log first 200 chars
+        if raw_data:
+            logger.info(f"📦 Raw data: {raw_data[:200]}...")
         
         # Parse JSON
         update_data = request.get_json()
@@ -905,11 +929,12 @@ def webhook_info():
             'has_custom_certificate': webhook_info.has_custom_certificate,
             'pending_update_count': webhook_info.pending_update_count,
             'max_connections': webhook_info.max_connections,
-            'allowed_updates': webhook_info.allowed_updates
+            'allowed_updates': webhook_info.allowed_updates,
+            'last_error_date': webhook_info.last_error_date,
+            'last_error_message': webhook_info.last_error_message
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 # ==================== BOT MESSAGE HANDLERS ====================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -1530,3 +1555,4 @@ if __name__ == "__main__":
     
     # Run Flask app
     app.run(host='0.0.0.0', port=port)
+
