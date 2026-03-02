@@ -1,26 +1,21 @@
-# Core dependencies
+# Core dependencies - Pure Python packages only
 pyTelegramBotAPI==4.14.0
 requests==2.31.0
-supabase==1.2.0
-flask==2.3.3
+Flask==2.3.3
 gunicorn==21.2.0
 python-dotenv==1.0.0
+supabase==1.2.0
 
-# Async support
-anyio==4.0.0
-asyncio==3.4.3
-
-# HTTP client enhancements
+# HTTP client - pure Python
 httpx==0.25.0
 httpcore==1.0.0
 
-# Data validation
-pydantic==2.4.0
-pydantic_core==2.10.0
-
-# Utilities
+# Date handling - pure Python
 python-dateutil==2.8.2
 pytz==2023.3
 
-# Performance
-cachetools==5.3.1
+# JSON handling - pure Python
+json5==0.9.14
+
+# No Rust-based packages (avoid pydantic, pydantic-core, cryptography, etc.)
+# Use simple types instead of pydantic
