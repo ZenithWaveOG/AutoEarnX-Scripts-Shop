@@ -1,4 +1,4 @@
-# Core dependencies - Pure Python packages only
+# Core dependencies
 pyTelegramBotAPI==4.14.0
 requests==2.31.0
 Flask==2.3.3
@@ -6,16 +6,10 @@ gunicorn==21.2.0
 python-dotenv==1.0.0
 supabase==1.2.0
 
-# HTTP client - pure Python
-httpx==0.25.0
+# HTTP client - Use version compatible with supabase
+httpx==0.24.1
 httpcore==1.0.0
 
-# Date handling - pure Python
+# Date handling
 python-dateutil==2.8.2
 pytz==2023.3
-
-# JSON handling - pure Python
-json5==0.9.14
-
-# No Rust-based packages (avoid pydantic, pydantic-core, cryptography, etc.)
-# Use simple types instead of pydantic
