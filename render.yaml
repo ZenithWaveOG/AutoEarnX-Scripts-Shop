@@ -2,20 +2,22 @@ services:
   - type: web
     name: instagram-bot
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn IGCreatorV2:app
+    region: oregon  # or singapore, frankfurt, etc.
+    plan: free
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn bot:app
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_IDS
         value: "123456789,987654321"
       - key: WEBHOOK_URL
         value: "https://your-app-name.onrender.com"
-      - key: WEBHOOK_SECRET
-        generateValue: true
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
-        sync: false
       - key: DATABASE_URL
         sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
