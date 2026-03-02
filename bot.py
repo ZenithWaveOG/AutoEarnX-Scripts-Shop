@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Instagram Account Creator Bot - Working with Python 3.14.3
-Using direct PostgreSQL connection instead of supabase-py
+Using pg8000 for PostgreSQL connection (pure Python, no compilation needed)
 """
 
 import requests
@@ -14,8 +14,8 @@ from telebot import TeleBot
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from flask import Flask, request, jsonify
 import sys
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000
+from pg8000.native import Connection, DatabaseError
 from datetime import datetime
 import logging
 import threading
@@ -76,29 +76,98 @@ class UserSession:
         self.username = None
         self.join_date = time.time()
 
-# ==================== DATABASE FUNCTIONS ====================
+# ==================== DATABASE FUNCTIONS WITH pg8000 ====================
+
+def parse_db_url(url):
+    """Parse PostgreSQL connection URL"""
+    # Format: postgresql://user:password@host:port/database
+    try:
+        # Remove protocol
+        if '://' in url:
+            url = url.split('://', 1)[1]
+        
+        # Split authentication and host
+        if '@' in url:
+            auth, host_part = url.split('@', 1)
+            if ':' in auth:
+                user, password = auth.split(':', 1)
+            else:
+                user = auth
+                password = ''
+        else:
+            user = ''
+            password = ''
+            host_part = url
+        
+        # Split host and database
+        if '/' in host_part:
+            host_port, database = host_part.split('/', 1)
+        else:
+            host_port = host_part
+            database = 'postgres'
+        
+        # Split host and port
+        if ':' in host_port:
+            host, port = host_port.split(':', 1)
+            port = int(port)
+        else:
+            host = host_port
+            port = 5432
+        
+        return {
+            'user': user,
+            'password': password,
+            'host': host,
+            'port': port,
+            'database': database
+        }
+    except Exception as e:
+        logger.error(f"Error parsing DATABASE_URL: {e}")
+        return None
 
 def get_db_connection():
-    """Get database connection"""
+    """Get database connection using pg8000"""
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn_params = parse_db_url(DATABASE_URL)
+        if not conn_params:
+            logger.error("Failed to parse DATABASE_URL")
+            return None
+        
+        # Connect to database
+        conn = Connection(
+            user=conn_params['user'],
+            password=conn_params['password'],
+            host=conn_params['host'],
+            port=conn_params['port'],
+            database=conn_params['database'],
+            timeout=30
+        )
+        
+        # Test connection
+        conn.run("SELECT 1")
+        
         return conn
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         return None
 
+def dict_from_row(row, columns):
+    """Convert a row to dictionary"""
+    if not row:
+        return None
+    return dict(zip(columns, row))
+
 def init_database():
     """Initialize database tables"""
-    conn = get_db_connection()
-    if not conn:
-        logger.error(f"{red}❌ Failed to connect to database{end}")
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            logger.error(f"{red}❌ Failed to connect to database{end}")
+            return False
         
         # Create users table
-        cur.execute("""
+        conn.run("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
@@ -113,7 +182,7 @@ def init_database():
         """)
         
         # Create pending_users table
-        cur.execute("""
+        conn.run("""
             CREATE TABLE IF NOT EXISTS pending_users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
@@ -124,7 +193,7 @@ def init_database():
         """)
         
         # Create instagram_accounts table
-        cur.execute("""
+        conn.run("""
             CREATE TABLE IF NOT EXISTS instagram_accounts (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
@@ -140,7 +209,7 @@ def init_database():
         """)
         
         # Create admin_logs table
-        cur.execute("""
+        conn.run("""
             CREATE TABLE IF NOT EXISTS admin_logs (
                 id SERIAL PRIMARY KEY,
                 admin_id BIGINT,
@@ -152,7 +221,7 @@ def init_database():
         """)
         
         # Create webhook_logs table
-        cur.execute("""
+        conn.run("""
             CREATE TABLE IF NOT EXISTS webhook_logs (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -164,13 +233,9 @@ def init_database():
         """)
         
         # Create indexes
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_approved ON users(is_approved)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_users(status)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_user_id ON instagram_accounts(user_id)")
-        
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn.run("CREATE INDEX IF NOT EXISTS idx_users_approved ON users(is_approved)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_users(status)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_instagram_user_id ON instagram_accounts(user_id)")
         
         logger.info(f"{green}✅ Database initialized successfully{end}")
         return True
@@ -178,168 +243,179 @@ def init_database():
     except Exception as e:
         logger.error(f"{red}❌ Database initialization error: {e}{end}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_user_from_db(user_id):
     """Get user from database"""
-    conn = get_db_connection()
-    if not conn:
-        return None
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        return dict(user) if user else None
+        conn = get_db_connection()
+        if not conn:
+            return None
+        
+        result = conn.run("SELECT * FROM users WHERE user_id = $1", user_id)
+        if result and len(result) > 0:
+            columns = [col['name'] for col in conn.columns]
+            return dict_from_row(result[0], columns)
+        return None
     except Exception as e:
         logger.error(f"Error getting user: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 def save_user_to_db(user_id, username, first_name, last_name='', is_approved=False, is_admin=False):
     """Save user to database"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("""
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        conn.run("""
             INSERT INTO users (user_id, username, first_name, last_name, is_approved, is_admin, join_date, last_active)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (user_id) 
             DO UPDATE SET 
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name,
                 last_name = EXCLUDED.last_name,
                 last_active = EXCLUDED.last_active
-        """, (user_id, username, first_name, last_name, is_approved, is_admin, datetime.now(), datetime.now()))
-        conn.commit()
-        cur.close()
-        conn.close()
+        """, user_id, username, first_name, last_name, is_approved, is_admin, datetime.now(), datetime.now())
+        
         return True
     except Exception as e:
         logger.error(f"Error saving user: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def update_user_last_active(user_id):
     """Update user's last active timestamp"""
-    conn = get_db_connection()
-    if not conn:
-        return
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET last_active = %s WHERE user_id = %s", (datetime.now(), user_id))
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn = get_db_connection()
+        if not conn:
+            return
+        
+        conn.run("UPDATE users SET last_active = $1 WHERE user_id = $2", datetime.now(), user_id)
     except Exception as e:
         logger.error(f"Error updating last active: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def add_pending_user(user_id, username, first_name):
     """Add user to pending approvals"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("""
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        conn.run("""
             INSERT INTO pending_users (user_id, username, first_name, request_date, status)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (user_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name,
                 request_date = EXCLUDED.request_date,
                 status = EXCLUDED.status
-        """, (user_id, username, first_name, datetime.now(), 'pending'))
-        conn.commit()
-        cur.close()
-        conn.close()
+        """, user_id, username, first_name, datetime.now(), 'pending')
+        
         return True
     except Exception as e:
         logger.error(f"Error adding pending user: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def remove_pending_user(user_id):
     """Remove user from pending approvals"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM pending_users WHERE user_id = %s", (user_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        conn.run("DELETE FROM pending_users WHERE user_id = $1", user_id)
         return True
     except Exception as e:
         logger.error(f"Error removing pending user: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_pending_users():
     """Get all pending users"""
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM pending_users WHERE status = 'pending' ORDER BY request_date DESC")
-        users = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [dict(user) for user in users]
+        conn = get_db_connection()
+        if not conn:
+            return []
+        
+        result = conn.run("SELECT * FROM pending_users WHERE status = 'pending' ORDER BY request_date DESC")
+        if result and len(result) > 0:
+            columns = [col['name'] for col in conn.columns]
+            return [dict_from_row(row, columns) for row in result]
+        return []
     except Exception as e:
         logger.error(f"Error getting pending users: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
 def approve_user(user_id, approver_id):
     """Approve a user"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
         # Update users table
-        cur.execute("UPDATE users SET is_approved = TRUE WHERE user_id = %s", (user_id,))
+        conn.run("UPDATE users SET is_approved = TRUE WHERE user_id = $1", user_id)
         
         # Remove from pending
-        cur.execute("DELETE FROM pending_users WHERE user_id = %s", (user_id,))
+        conn.run("DELETE FROM pending_users WHERE user_id = $1", user_id)
         
         # Log admin action
-        cur.execute("""
+        conn.run("""
             INSERT INTO admin_logs (admin_id, action_type, target_user_id, details, timestamp)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (approver_id, 'approve', user_id, json.dumps({'action': 'approve'}), datetime.now()))
+            VALUES ($1, $2, $3, $4, $5)
+        """, approver_id, 'approve', user_id, json.dumps({'action': 'approve'}), datetime.now())
         
-        conn.commit()
-        cur.close()
-        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error approving user: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def reject_user(user_id):
     """Reject a user"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("UPDATE pending_users SET status = 'rejected' WHERE user_id = %s", (user_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        conn.run("UPDATE pending_users SET status = 'rejected' WHERE user_id = $1", user_id)
         return True
     except Exception as e:
         logger.error(f"Error rejecting user: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def is_user_approved(user_id):
     """Check if user is approved"""
@@ -355,102 +431,92 @@ def is_user_approved(user_id):
 
 def save_instagram_account(user_id, account_data):
     """Save created Instagram account to database"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("""
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        conn.run("""
             INSERT INTO instagram_accounts (user_id, email, username, password, fullname, cookies, account_number, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            user_id, 
-            account_data['email'], 
-            account_data['username'], 
-            account_data['password'], 
-            account_data['fullname'],
-            account_data.get('cookies', ''),
-            account_data['account_num'],
-            datetime.now()
-        ))
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """, user_id, account_data['email'], account_data['username'], account_data['password'], 
+            account_data['fullname'], account_data.get('cookies', ''), account_data['account_num'], datetime.now())
         
         # Update user's total accounts count
-        cur.execute("""
+        conn.run("""
             UPDATE users 
             SET total_accounts_created = total_accounts_created + 1 
-            WHERE user_id = %s
-        """, (user_id,))
+            WHERE user_id = $1
+        """, user_id)
         
-        conn.commit()
-        cur.close()
-        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error saving Instagram account: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_user_stats(user_id):
     """Get statistics for a user"""
-    conn = get_db_connection()
-    if not conn:
-        return None
-    
+    conn = None
     try:
-        cur = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return None
         
         # Get user info
-        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-        user = cur.fetchone()
+        user_result = conn.run("SELECT * FROM users WHERE user_id = $1", user_id)
+        user = None
+        if user_result and len(user_result) > 0:
+            columns = [col['name'] for col in conn.columns]
+            user = dict_from_row(user_result[0], columns)
         
         # Get accounts count
-        cur.execute("SELECT COUNT(*) as count FROM instagram_accounts WHERE user_id = %s", (user_id,))
-        count = cur.fetchone()
-        
-        cur.close()
-        conn.close()
+        count_result = conn.run("SELECT COUNT(*) as count FROM instagram_accounts WHERE user_id = $1", user_id)
+        count = count_result[0][0] if count_result else 0
         
         return {
-            'user': dict(user) if user else None,
-            'total_accounts': count['count'] if count else 0
+            'user': user,
+            'total_accounts': count
         }
     except Exception as e:
         logger.error(f"Error getting user stats: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 def get_bot_stats():
     """Get overall bot statistics"""
-    conn = get_db_connection()
-    if not conn:
-        return {
-            'total_users': 0,
-            'approved_users': 0,
-            'pending_users': 0,
-            'total_instagram_accounts': 0,
-            'admins': len(ADMIN_IDS)
-        }
-    
+    conn = None
     try:
-        cur = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return {
+                'total_users': 0,
+                'approved_users': 0,
+                'pending_users': 0,
+                'total_instagram_accounts': 0,
+                'admins': len(ADMIN_IDS)
+            }
         
         # Total users
-        cur.execute("SELECT COUNT(*) as count FROM users")
-        total_users = cur.fetchone()['count']
+        total_result = conn.run("SELECT COUNT(*) as count FROM users")
+        total_users = total_result[0][0] if total_result else 0
         
         # Approved users
-        cur.execute("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
-        approved_users = cur.fetchone()['count']
+        approved_result = conn.run("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
+        approved_users = approved_result[0][0] if approved_result else 0
         
         # Pending users
-        cur.execute("SELECT COUNT(*) as count FROM pending_users WHERE status = 'pending'")
-        pending_users = cur.fetchone()['count']
+        pending_result = conn.run("SELECT COUNT(*) as count FROM pending_users WHERE status = 'pending'")
+        pending_users = pending_result[0][0] if pending_result else 0
         
         # Total Instagram accounts
-        cur.execute("SELECT COUNT(*) as count FROM instagram_accounts")
-        total_accounts = cur.fetchone()['count']
-        
-        cur.close()
-        conn.close()
+        accounts_result = conn.run("SELECT COUNT(*) as count FROM instagram_accounts")
+        total_accounts = accounts_result[0][0] if accounts_result else 0
         
         return {
             'total_users': total_users,
@@ -468,24 +534,27 @@ def get_bot_stats():
             'total_instagram_accounts': 0,
             'admins': len(ADMIN_IDS)
         }
+    finally:
+        if conn:
+            conn.close()
 
 def log_webhook_request(request):
     """Log webhook requests for monitoring"""
-    conn = get_db_connection()
-    if not conn:
-        return
-    
+    conn = None
     try:
-        cur = conn.cursor()
-        cur.execute("""
+        conn = get_db_connection()
+        if not conn:
+            return
+        
+        conn.run("""
             INSERT INTO webhook_logs (ip_address, user_agent, event_type, status_code, timestamp)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (request.remote_addr, request.user_agent.string, 'webhook', 200, datetime.now()))
-        conn.commit()
-        cur.close()
-        conn.close()
+            VALUES ($1, $2, $3, $4, $5)
+        """, request.remote_addr, request.user_agent.string, 'webhook', 200, datetime.now())
     except Exception as e:
         logger.error(f"Error logging webhook: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 # ==================== UTILITY FUNCTIONS ====================
 
@@ -1262,19 +1331,9 @@ def handle_callback(call):
             return
         
         # Get approved users count
-        conn = get_db_connection()
-        approved_count = 0
-        if conn:
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) as count FROM users WHERE is_approved = TRUE")
-                approved_count = cur.fetchone()['count']
-                cur.close()
-                conn.close()
-            except:
-                pass
+        stats = get_bot_stats()
         
-        text = f"✅ *Approved Users*\n\nTotal: {approved_count}\n\n"
+        text = f"✅ *Approved Users*\n\nTotal: {stats['approved_users']}\n\n"
         text += "Use /admin to manage users"
         
         bot.edit_message_text(text, user_id, call.message.message_id, 
@@ -1299,7 +1358,7 @@ def handle_callback(call):
 
 *System Info*
 🐍 Python: {sys.version.split()[0]}
-💾 Database: PostgreSQL
+💾 Database: PostgreSQL (pg8000)
         """
         
         bot.edit_message_text(stats_text, user_id, call.message.message_id, 
