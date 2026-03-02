@@ -219,18 +219,6 @@ def init_database():
             )
         """)
         
-        # Create webhook_logs table
-        conn.run("""
-            CREATE TABLE IF NOT EXISTS webhook_logs (
-                id SERIAL PRIMARY KEY,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ip_address TEXT,
-                user_agent TEXT,
-                event_type TEXT,
-                status_code INTEGER
-            )
-        """)
-        
         # Create indexes
         conn.run("CREATE INDEX IF NOT EXISTS idx_users_approved ON users(is_approved)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_users(status)")
@@ -845,69 +833,75 @@ def home():
         'status': 'running',
         'bot_username': 'AutoEarnX_Insta_Creator_Self_Bot',
         'python_version': sys.version.split()[0],
-        'webhook_configured': True,
-        'test_endpoints': {
-            'health': '/health',
-            'test_webhook': '/test-webhook',
-            'webhook_info': '/webhook-info'
-        }
+        'webhook_url': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
     }), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
+    db_status = "disconnected"
+    try:
+        conn = get_db_connection()
+        if conn:
+            conn.run("SELECT 1")
+            db_status = "connected"
+            conn.close()
+    except:
+        pass
+    
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'active_sessions': len(user_sessions),
-        'database': 'connected' if get_db_connection() else 'disconnected'
+        'database': db_status,
+        'active_sessions': len(user_sessions)
     }), 200
 
 @app.route('/test-webhook', methods=['GET', 'POST'])
 def test_webhook():
     """Test endpoint to verify webhook routing"""
+    if request.method == 'POST':
+        logger.info(f"Test webhook received POST: {request.get_json()}")
+    
     return jsonify({
         'status': 'ok',
         'method': request.method,
         'message': 'Test endpoint is working',
         'bot_token_configured': bool(BOT_TOKEN),
-        'webhook_url': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
-        'timestamp': datetime.now().isoformat()
+        'webhook_url': f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
     }), 200
 
 @app.route(f'/webhook/{BOT_TOKEN}', methods=['GET', 'POST'])
 def webhook():
     """Main webhook endpoint for Telegram updates"""
     
-    # Handle GET requests (for testing/browser visits)
+    # Handle GET requests (for testing)
     if request.method == 'GET':
         return jsonify({
             'status': 'webhook_active',
             'message': 'This endpoint accepts POST requests from Telegram',
             'bot_token': BOT_TOKEN[:15] + '...',
-            'expected_method': 'POST',
-            'how_to_test': 'Send a POST request with JSON data',
-            'telegram_webhook_info': f"{WEBHOOK_URL}/webhook-info",
+            'webhook_info': f"{WEBHOOK_URL}/webhook-info",
             'health_check': f"{WEBHOOK_URL}/health"
         }), 200
     
     # Handle POST requests (actual Telegram updates)
-    logger.info(f"🔔 Webhook received POST request from {request.remote_addr}")
-    logger.info(f"📦 Headers: {dict(request.headers)}")
+    logger.info("=" * 50)
+    logger.info(f"🔔 WEBHOOK RECEIVED at {datetime.now()}")
+    logger.info(f"📌 Remote IP: {request.remote_addr}")
     
     try:
         # Get raw data for debugging
         raw_data = request.get_data(as_text=True)
         if raw_data:
-            logger.info(f"📦 Raw data: {raw_data[:200]}...")
+            logger.info(f"📦 Raw data length: {len(raw_data)} chars")
         
         # Parse JSON
         update_data = request.get_json()
         if not update_data:
-            logger.error("No JSON data received")
+            logger.error("❌ No JSON data received")
             return jsonify({'error': 'No JSON data'}), 400
         
-        logger.info(f"✅ Parsed update ID: {update_data.get('update_id')}")
+        logger.info(f"✅ Update ID: {update_data.get('update_id')}")
         
         # Process the update
         update = Update.de_json(update_data)
@@ -916,8 +910,10 @@ def webhook():
         return jsonify({'status': 'ok'}), 200
         
     except Exception as e:
-        logger.error(f"❌ Error processing webhook: {e}")
+        logger.error(f"❌ Error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+    finally:
+        logger.info("=" * 50)
 
 @app.route('/webhook-info', methods=['GET'])
 def webhook_info():
@@ -935,6 +931,16 @@ def webhook_info():
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/test-send/<int:chat_id>', methods=['GET'])
+def test_send(chat_id):
+    """Test sending a message to a specific chat ID"""
+    try:
+        bot.send_message(chat_id, "🧪 Test message from bot - if you see this, the bot can send messages!")
+        return jsonify({'status': 'ok', 'message': f'Test message sent to {chat_id}'}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
 # ==================== BOT MESSAGE HANDLERS ====================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -959,32 +965,39 @@ def send_welcome(message):
             user_sessions[user_id] = UserSession(user_id)
         user_sessions[user_id].username = username
         
-        welcome_text = """
+        welcome_text = f"""
 🤖 *Instagram Account Creator Bot* 🤖
 
-Welcome back! You are an approved user.
+Welcome back @{username}! You are an approved user.
 
 *What would you like to do?*
 • Create Instagram accounts
 • Check your status
 • View help and information
+
+*Your Stats:*
+🆔 User ID: `{user_id}`
         """
         
         bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=create_main_menu())
+        logger.info(f"✅ Welcome message sent to {user_id}")
     
     elif user_id in ADMIN_IDS:
-        welcome_text = """
+        welcome_text = f"""
 👑 *Admin Panel* 👑
 
-Welcome Administrator!
+Welcome Administrator @{username}!
 
 *Admin Options:*
 • Manage user approvals
 • View bot statistics
 • Monitor pending requests
+
+*Your Admin ID:* `{user_id}`
         """
         
         bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=create_admin_menu())
+        logger.info(f"✅ Admin menu sent to {user_id}")
     
     else:
         pending = get_pending_users()
@@ -1018,15 +1031,17 @@ Please approve or reject this user:
                     parse_mode='Markdown',
                     reply_markup=create_user_approval_keyboard(user_id, username)
                 )
+                logger.info(f"✅ Admin {admin_id} notified")
             except Exception as e:
                 logger.error(f"Error notifying admin {admin_id}: {e}")
         
         bot.reply_to(
             message,
             "⏳ *Your request has been sent to the admins for approval.*\n\n"
-            "Please wait for an admin to approve your access.",
+            "You'll be notified once your request is processed.",
             parse_mode='Markdown'
         )
+        logger.info(f"✅ Pending message sent to {user_id}")
 
 @bot.message_handler(commands=['menu'])
 def show_menu(message):
@@ -1053,7 +1068,9 @@ def cancel_operation(message):
     
     if user_id in user_sessions:
         del user_sessions[user_id]
-    bot.reply_to(message, "❌ Operation cancelled. Use /menu to return.")
+        bot.reply_to(message, "❌ Operation cancelled. Use /menu to return.")
+    else:
+        bot.reply_to(message, "❌ No active operation to cancel.")
 
 @bot.message_handler(commands=['status'])
 def check_status(message):
@@ -1123,6 +1140,7 @@ def handle_callback(call):
     
     elif data == "status":
         bot.delete_message(user_id, call.message.message_id)
+        # Create a fake message object
         class FakeMessage:
             def __init__(self, chat_id):
                 self.chat = type('Chat', (), {'id': chat_id})()
@@ -1172,6 +1190,7 @@ def handle_callback(call):
         bot.edit_message_text(profile_text, user_id, call.message.message_id, 
                              parse_mode='Markdown', reply_markup=create_main_menu())
     
+    # Admin callbacks
     elif data.startswith("approve_") or data.startswith("reject_"):
         if user_id not in ADMIN_IDS:
             bot.answer_callback_query(call.id, "❌ Admin only!")
@@ -1189,6 +1208,7 @@ def handle_callback(call):
                         "You can now use the bot. Send /start to begin.",
                         parse_mode='Markdown'
                     )
+                    logger.info(f"✅ User {target_id} approved and notified")
                 except Exception as e:
                     logger.error(f"Error notifying approved user {target_id}: {e}")
                 
@@ -1320,6 +1340,7 @@ def handle_messages(message):
         variations_text += "You will receive OTP requests for each account."
         
         bot.reply_to(message, variations_text, parse_mode='Markdown')
+        logger.info(f"✅ Email variations sent to {user_id}")
         
         session.step = 'creating_accounts'
         session.current_account_index = 0
@@ -1487,9 +1508,11 @@ def setup_webhook():
         
         logger.info(f"📡 Setting webhook to: {webhook_url}")
         
+        # Remove existing webhook
         bot.remove_webhook()
         time.sleep(1)
         
+        # Set new webhook
         success = bot.set_webhook(
             url=webhook_url,
             max_connections=40,
@@ -1518,7 +1541,7 @@ if __name__ == "__main__":
     
     # Check configuration
     print(f"{blue}📋 Configuration:{end}")
-    print(f"   Bot Token: {green}{BOT_TOKEN[:10]}...{end}")
+    print(f"   Bot Token: {green}{BOT_TOKEN[:15]}...{end}")
     print(f"   Webhook URL: {green}{WEBHOOK_URL}{end}")
     print(f"   Admin IDs: {green}{ADMIN_IDS}{end}")
     print(f"   Database: {green}PostgreSQL (pg8000){end}\n")
@@ -1526,8 +1549,8 @@ if __name__ == "__main__":
     # Initialize database
     print(f"{blue}📦 Initializing database...{end}")
     if not init_database():
-        logger.error(f"{red}❌ Database initialization failed. Exiting...{end}")
-        sys.exit(1)
+        logger.error(f"{red}❌ Database initialization failed. Continuing without database...{end}")
+        print(f"{yellow}⚠️ Continuing without database - some features may not work{end}\n")
     
     # Test bot connection
     try:
@@ -1555,4 +1578,3 @@ if __name__ == "__main__":
     
     # Run Flask app
     app.run(host='0.0.0.0', port=port)
-
