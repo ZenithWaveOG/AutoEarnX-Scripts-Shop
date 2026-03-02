@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Instagram Account Creator Bot
-Compatible with Python 3.14.3
+Compatible with Python 3.14.3 - No Rust dependencies
 """
 
 import requests
@@ -15,7 +15,6 @@ import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Any, Union
-from dataclasses import dataclass, field, asdict
 from contextlib import contextmanager
 
 # Third-party imports
@@ -66,50 +65,71 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# DATA CLASSES
+# SIMPLE DATA CLASSES (without pydantic)
 # ============================================================================
 
-@dataclass
 class AccountData:
     """Temporary account data during creation"""
-    account_num: int
-    email: str
-    password: str
-    fullname: str
-    username_suggested: Optional[str] = None
-    cookiesData: Optional[Dict] = None
-    headersData: Optional[Dict] = None
+    def __init__(self, account_num, email, password, fullname, username_suggested=None, 
+                 cookiesData=None, headersData=None):
+        self.account_num = account_num
+        self.email = email
+        self.password = password
+        self.fullname = fullname
+        self.username_suggested = username_suggested
+        self.cookiesData = cookiesData
+        self.headersData = headersData
+    
+    def to_dict(self):
+        return {
+            'account_num': self.account_num,
+            'email': self.email,
+            'password': self.password,
+            'fullname': self.fullname,
+            'username_suggested': self.username_suggested
+        }
 
-@dataclass
 class CompletedAccount:
     """Successfully created account data"""
-    account_num: int
-    email: str
-    username: str
-    password: str
-    fullname: str
-    cookies: str
-    created_at: datetime = field(default_factory=datetime.now)
+    def __init__(self, account_num, email, username, password, fullname, cookies):
+        self.account_num = account_num
+        self.email = email
+        self.username = username
+        self.password = password
+        self.fullname = fullname
+        self.cookies = cookies
+        self.created_at = datetime.now()
+    
+    def to_dict(self):
+        return {
+            'account_num': self.account_num,
+            'email': self.email,
+            'username': self.username,
+            'password': self.password,
+            'fullname': self.fullname,
+            'cookies': self.cookies,
+            'created_at': self.created_at.isoformat()
+        }
 
-@dataclass
 class UserSession:
     """User session data"""
-    user_id: int
-    step: str = 'waiting_for_gmail'
-    base_email: Optional[str] = None
-    email_variations: List[str] = field(default_factory=list)
-    passwords: List[str] = field(default_factory=list)
-    fullnames: List[str] = field(default_factory=list)
-    accounts_data: Dict[int, AccountData] = field(default_factory=dict)
-    completed_accounts: List[CompletedAccount] = field(default_factory=list)
-    current_account_index: int = 0
-    waiting_for_otp: bool = False
-    otp_account_num: Optional[int] = None
-    total_accounts: int = 4
-    username: Optional[str] = None
-    join_date: float = field(default_factory=time.time)
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.step = 'waiting_for_gmail'
+        self.base_email = None
+        self.email_variations = []
+        self.passwords = []
+        self.fullnames = []
+        self.accounts_data = {}  # dict of account_num -> AccountData
+        self.completed_accounts = []  # list of CompletedAccount
+        self.current_account_index = 0
+        self.waiting_for_otp = False
+        self.otp_account_num = None
+        self.total_accounts = 4
+        self.username = None
+        self.join_date = time.time()
     
-    def to_dict(self) -> Dict:
+    def to_dict(self):
         """Convert to dictionary for storage"""
         return {
             'user_id': self.user_id,
@@ -133,31 +153,31 @@ class UserSession:
 class SessionStore:
     """Thread-safe session store"""
     def __init__(self):
-        self._sessions: Dict[int, UserSession] = {}
+        self._sessions = {}  # Dict[int, UserSession]
         self._lock = asyncio.Lock()
     
-    async def get(self, user_id: int) -> Optional[UserSession]:
+    async def get(self, user_id):
         """Get session for user"""
         async with self._lock:
             return self._sessions.get(user_id)
     
-    async def set(self, user_id: int, session: UserSession):
+    async def set(self, user_id, session):
         """Set session for user"""
         async with self._lock:
             self._sessions[user_id] = session
     
-    async def delete(self, user_id: int):
+    async def delete(self, user_id):
         """Delete session for user"""
         async with self._lock:
             if user_id in self._sessions:
                 del self._sessions[user_id]
     
-    async def exists(self, user_id: int) -> bool:
+    async def exists(self, user_id):
         """Check if session exists"""
         async with self._lock:
             return user_id in self._sessions
     
-    async def get_all(self) -> Dict[int, UserSession]:
+    async def get_all(self):
         """Get all sessions"""
         async with self._lock:
             return self._sessions.copy()
@@ -173,7 +193,7 @@ class DatabaseManager:
     """Supabase database operations"""
     
     @staticmethod
-    async def get_user(user_id: int) -> Optional[Dict]:
+    async def get_user(user_id):
         """Get user from database"""
         try:
             result = supabase.table('users').select('*').eq('id', user_id).execute()
@@ -183,7 +203,7 @@ class DatabaseManager:
             return None
     
     @staticmethod
-    async def upsert_user(user_id: int, username: str, first_name: str, last_name: str = None) -> Dict:
+    async def upsert_user(user_id, username, first_name, last_name=None):
         """Insert or update user"""
         try:
             # Check if user exists
@@ -212,7 +232,7 @@ class DatabaseManager:
             return {'id': user_id, 'username': username, 'first_name': first_name}
     
     @staticmethod
-    async def add_to_pending(user_id: int, username: str, first_name: str, last_name: str = None):
+    async def add_to_pending(user_id, username, first_name, last_name=None):
         """Add user to pending approvals"""
         try:
             data = {
@@ -228,7 +248,7 @@ class DatabaseManager:
             logger.error(f"Error adding to pending {user_id}: {e}")
     
     @staticmethod
-    async def remove_from_pending(user_id: int):
+    async def remove_from_pending(user_id):
         """Remove user from pending approvals"""
         try:
             supabase.table('pending_users').delete().eq('id', user_id).execute()
@@ -236,7 +256,7 @@ class DatabaseManager:
             logger.error(f"Error removing from pending {user_id}: {e}")
     
     @staticmethod
-    async def get_pending_users() -> Dict[int, Dict]:
+    async def get_pending_users():
         """Get all pending users"""
         try:
             result = supabase.table('pending_users').select('*').execute()
@@ -246,7 +266,7 @@ class DatabaseManager:
             return {}
     
     @staticmethod
-    async def approve_user(user_id: int, admin_id: int):
+    async def approve_user(user_id, admin_id):
         """Approve a user"""
         try:
             # Update user
@@ -271,7 +291,7 @@ class DatabaseManager:
             logger.error(f"Error approving user {user_id}: {e}")
     
     @staticmethod
-    async def reject_user(user_id: int, admin_id: int, reason: str = None):
+    async def reject_user(user_id, admin_id, reason=None):
         """Reject a user"""
         try:
             # Remove from pending
@@ -291,7 +311,7 @@ class DatabaseManager:
             logger.error(f"Error rejecting user {user_id}: {e}")
     
     @staticmethod
-    async def save_account(user_id: int, account: CompletedAccount) -> Optional[str]:
+    async def save_account(user_id, account):
         """Save created account to database"""
         try:
             data = {
@@ -307,9 +327,12 @@ class DatabaseManager:
             result = supabase.table('accounts').insert(data).execute()
             
             # Update user's total accounts count
-            supabase.table('users').update({
-                'total_accounts_created': supabase.table('users').select('total_accounts_created').eq('id', user_id).execute().data[0].get('total_accounts_created', 0) + 1
-            }).eq('id', user_id).execute()
+            user = await DatabaseManager.get_user(user_id)
+            if user:
+                total = user.get('total_accounts_created', 0) + 1
+                supabase.table('users').update({
+                    'total_accounts_created': total
+                }).eq('id', user_id).execute()
             
             return result.data[0]['id'] if result.data else None
         except Exception as e:
@@ -317,7 +340,7 @@ class DatabaseManager:
             return None
     
     @staticmethod
-    async def get_user_stats(user_id: int) -> Dict:
+    async def get_user_stats(user_id):
         """Get user statistics"""
         try:
             # Get user
@@ -325,14 +348,15 @@ class DatabaseManager:
             
             # Get account count
             accounts = supabase.table('accounts').select('*', count='exact').eq('user_id', user_id).execute()
+            account_count = accounts.count if hasattr(accounts, 'count') else 0
             
-            # Get session count
-            sessions = supabase.table('sessions').select('*', count='exact').eq('user_id', user_id).execute()
+            # Get session count - simplified
+            session_count = 0
             
             return {
                 'user': user,
-                'total_accounts': accounts.count if hasattr(accounts, 'count') else 0,
-                'total_sessions': sessions.count if hasattr(sessions, 'count') else 0,
+                'total_accounts': account_count,
+                'total_sessions': session_count,
                 'is_approved': user.get('approved', False) if user else False,
                 'is_admin': user_id in ADMIN_IDS
             }
@@ -346,7 +370,7 @@ class DatabaseManager:
             }
     
     @staticmethod
-    async def get_bot_stats() -> Dict:
+    async def get_bot_stats():
         """Get overall bot statistics"""
         try:
             # Total users
@@ -365,13 +389,16 @@ class DatabaseManager:
             today = datetime.now().date().isoformat()
             today_accounts = supabase.table('accounts').select('*', count='exact').gte('created_at', f"{today}T00:00:00").execute()
             
+            # Active sessions
+            sessions = await session_store.get_all()
+            
             return {
                 'total_users': total_users.count if hasattr(total_users, 'count') else 0,
                 'approved_users': approved_users.count if hasattr(approved_users, 'count') else 0,
                 'pending_users': pending_users.count if hasattr(pending_users, 'count') else 0,
                 'total_accounts': total_accounts.count if hasattr(total_accounts, 'count') else 0,
                 'today_accounts': today_accounts.count if hasattr(today_accounts, 'count') else 0,
-                'active_sessions': len(await session_store.get_all())
+                'active_sessions': len(sessions)
             }
         except Exception as e:
             logger.error(f"Error getting bot stats: {e}")
@@ -388,11 +415,11 @@ class DatabaseManager:
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def is_admin(user_id: int) -> bool:
+def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS
 
-async def is_approved(user_id: int) -> bool:
+async def is_approved(user_id):
     """Check if user is approved"""
     if is_admin(user_id):
         return True
@@ -400,22 +427,22 @@ async def is_approved(user_id: int) -> bool:
     user = await DatabaseManager.get_user(user_id)
     return user and user.get('approved', False)
 
-def generate_password(length: int = 12) -> str:
+def generate_password(length=12):
     """Generate random password"""
     characters = string.ascii_letters + string.digits + "!@#$%^&*"
     return ''.join(random.choice(characters) for _ in range(length))
 
-def generate_fullname() -> str:
+def generate_fullname():
     """Generate random full name"""
     first_names = ["Alex", "Jordan", "Taylor", "Casey", "Riley", "Morgan", "Cameron", "Quinn", "Avery", "Blake"]
     last_names = ["Smith", "Johnson", "Brown", "Taylor", "Lee", "Wilson", "Martin", "White", "Harris", "Clark"]
     return f"{random.choice(first_names)} {random.choice(last_names)}"
 
-def format_cookies(cookies_dict: Dict) -> str:
+def format_cookies(cookies_dict):
     """Format cookies dictionary to string"""
     return '; '.join([f"{k}={v}" for k, v in cookies_dict.items()])
 
-def modify_gmail_for_dot_trick(base_email: str, dot_positions: List[int]) -> str:
+def modify_gmail_for_dot_trick(base_email, dot_positions):
     """Apply Gmail dot trick to email"""
     if '@' not in base_email:
         return base_email
@@ -431,7 +458,7 @@ def modify_gmail_for_dot_trick(base_email: str, dot_positions: List[int]) -> str
     
     return ''.join(modified_local) + '@' + domain
 
-def generate_gmail_variations(base_email: str, count: int = 4) -> List[str]:
+def generate_gmail_variations(base_email, count=4):
     """Generate Gmail variations using dot trick"""
     variations = []
     
@@ -451,7 +478,7 @@ def generate_gmail_variations(base_email: str, count: int = 4) -> List[str]:
 # INSTAGRAM API FUNCTIONS
 # ============================================================================
 
-def set_bio(cookies_dict: Dict, first_name: str, username: str, retries: int = 3) -> bool:
+def set_bio(cookies_dict, first_name, username, retries=3):
     """Set Instagram bio"""
     try:
         sessionid = cookies_dict.get('sessionid', '')
@@ -496,7 +523,7 @@ def set_bio(cookies_dict: Dict, first_name: str, username: str, retries: int = 3
         logger.error(f"Error setting bio: {e}")
         return False
 
-async def start_account_creation(user_id: int, email: str, password: str, fullname: str, account_num: int) -> Optional[AccountData]:
+async def start_account_creation(user_id, email, password, fullname, account_num):
     """Start the account creation process"""
     
     encryptedPassword = f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}'
@@ -662,7 +689,7 @@ async def start_account_creation(user_id: int, email: str, password: str, fullna
         headersData=headersData
     )
 
-async def complete_account_with_otp(user_id: int, account_num: int, otp_code: str, account_data: AccountData) -> Optional[CompletedAccount]:
+async def complete_account_with_otp(user_id, account_num, otp_code, account_data):
     """Complete account creation using OTP"""
     
     try:
@@ -761,7 +788,7 @@ async def complete_account_with_otp(user_id: int, account_num: int, otp_code: st
 # KEYBOARD MARKUPS
 # ============================================================================
 
-def create_main_menu() -> InlineKeyboardMarkup:
+def create_main_menu():
     """Create main menu keyboard"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -772,7 +799,7 @@ def create_main_menu() -> InlineKeyboardMarkup:
     )
     return markup
 
-def create_admin_menu() -> InlineKeyboardMarkup:
+def create_admin_menu():
     """Create admin menu keyboard"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -783,7 +810,7 @@ def create_admin_menu() -> InlineKeyboardMarkup:
     )
     return markup
 
-def create_user_approval_keyboard(user_id: int, username: str) -> InlineKeyboardMarkup:
+def create_user_approval_keyboard(user_id, username):
     """Create keyboard for approving/rejecting users"""
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -797,7 +824,7 @@ def create_user_approval_keyboard(user_id: int, username: str) -> InlineKeyboard
 # ============================================================================
 
 @bot.message_handler(commands=['start'])
-def send_welcome(message: Message):
+def send_welcome(message):
     """Handle /start command"""
     user_id = message.chat.id
     username = message.from_user.username or "NoUsername"
@@ -807,7 +834,7 @@ def send_welcome(message: Message):
     # Run async function in sync context
     asyncio.run(handle_start(user_id, username, first_name, last_name, message))
 
-async def handle_start(user_id: int, username: str, first_name: str, last_name: Optional[str], message: Message):
+async def handle_start(user_id, username, first_name, last_name, message):
     """Async handler for /start command"""
     
     # Save user to database
@@ -894,14 +921,14 @@ Please approve or reject this user:
             )
 
 @bot.message_handler(commands=['menu'])
-def show_menu(message: Message):
+def show_menu(message):
     """Handle /menu command"""
     user_id = message.chat.id
     
     # Run async function
     asyncio.run(handle_menu(user_id, message))
 
-async def handle_menu(user_id: int, message: Message):
+async def handle_menu(user_id, message):
     """Async handler for /menu command"""
     
     if not await is_approved(user_id) and not is_admin(user_id):
@@ -914,14 +941,14 @@ async def handle_menu(user_id: int, message: Message):
         bot.reply_to(message, "📋 *Main Menu*", parse_mode='Markdown', reply_markup=create_main_menu())
 
 @bot.message_handler(commands=['cancel'])
-def cancel_operation(message: Message):
+def cancel_operation(message):
     """Handle /cancel command"""
     user_id = message.chat.id
     
     # Run async function
     asyncio.run(handle_cancel(user_id, message))
 
-async def handle_cancel(user_id: int, message: Message):
+async def handle_cancel(user_id, message):
     """Async handler for /cancel command"""
     
     if not await is_approved(user_id) and not is_admin(user_id):
@@ -933,14 +960,14 @@ async def handle_cancel(user_id: int, message: Message):
     bot.reply_to(message, "❌ Operation cancelled. Use /menu to return to main menu.")
 
 @bot.message_handler(commands=['status'])
-def check_status(message: Message):
+def check_status(message):
     """Handle /status command"""
     user_id = message.chat.id
     
     # Run async function
     asyncio.run(handle_status(user_id, message))
 
-async def handle_status(user_id: int, message: Message):
+async def handle_status(user_id, message):
     """Async handler for /status command"""
     
     if not await is_approved(user_id) and not is_admin(user_id):
@@ -975,14 +1002,14 @@ Use /menu to start a new session.
         bot.reply_to(message, status_text, parse_mode='Markdown', reply_markup=create_main_menu())
 
 @bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call: CallbackQuery):
+def handle_callback(call):
     """Handle callback queries"""
     user_id = call.from_user.id
     
     # Run async function
     asyncio.run(handle_callback_async(call, user_id))
 
-async def handle_callback_async(call: CallbackQuery, user_id: int):
+async def handle_callback_async(call, user_id):
     """Async handler for callback queries"""
     data = call.data
     
@@ -1187,14 +1214,14 @@ async def handle_callback_async(call: CallbackQuery, user_id: int):
                              parse_mode='Markdown', reply_markup=create_admin_menu())
 
 @bot.message_handler(func=lambda message: True)
-def handle_messages(message: Message):
+def handle_messages(message):
     """Handle all text messages"""
     user_id = message.chat.id
     
     # Run async function
     asyncio.run(handle_message_async(message, user_id))
 
-async def handle_message_async(message: Message, user_id: int):
+async def handle_message_async(message, user_id):
     """Async handler for text messages"""
     text = message.text.strip()
     
@@ -1318,7 +1345,7 @@ async def handle_message_async(message: Message, user_id: int):
                 reply_markup=create_main_menu()
             )
 
-async def start_next_account(user_id: int):
+async def start_next_account(user_id):
     """Start creation of next account"""
     session = await session_store.get(user_id)
     if not session:
@@ -1391,7 +1418,7 @@ Please check your email and send me the OTP code:
                 bot.send_message(user_id, "❌ No accounts were created successfully.")
             await session_store.delete(user_id)
 
-async def send_credentials_file(user_id: int, session: UserSession):
+async def send_credentials_file(user_id, session):
     """Send the credentials file to user"""
     if not session.completed_accounts:
         bot.send_message(user_id, "❌ No accounts were created successfully.")
