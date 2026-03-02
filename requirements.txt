@@ -1,15 +1,10 @@
-# Core dependencies
+# Minimal working set for Python 3.14.3
 pyTelegramBotAPI==4.14.0
 requests==2.31.0
 Flask==2.3.3
 gunicorn==21.2.0
 python-dotenv==1.0.0
-supabase==1.2.0
-
-# HTTP client - Use versions compatible with each other
-httpx==0.24.1
-httpcore==0.17.3
-
-# Date handling
-python-dateutil==2.8.2
-pytz==2023.3
+supabase==2.12.0
+httpx==0.27.2
+python-dateutil==2.9.0.post0
+pytz==2024.2
