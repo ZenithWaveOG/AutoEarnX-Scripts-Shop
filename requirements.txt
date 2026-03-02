@@ -6,9 +6,9 @@ gunicorn==21.2.0
 python-dotenv==1.0.0
 supabase==1.2.0
 
-# HTTP client - Use version compatible with supabase
+# HTTP client - Use versions compatible with each other
 httpx==0.24.1
-httpcore==1.0.0
+httpcore==0.17.3
 
 # Date handling
 python-dateutil==2.8.2
