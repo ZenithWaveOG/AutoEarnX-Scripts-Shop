@@ -113,9 +113,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.bot_data['db_pool']
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (user_id, username, first_name) VALUES ($1, $2, $3)
-            ON CONFLICT (user_id) DO NOTHING
-        """, user.id, user.username, user.first_name)
+    INSERT INTO users (user_id, username, first_name) VALUES ($1::bigint, $2, $3)
+    ON CONFLICT (user_id) DO NOTHING
+""", user.id, user.username, user.first_name)
     await update.message.reply_text(
         f"Welcome {user.first_name}! Choose an option:",
         reply_markup=get_main_menu_keyboard(user.id)
@@ -145,7 +145,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 SELECT o.order_id, o.product_id, o.status, p.name
                 FROM orders o
                 JOIN products p ON o.product_id = p.id
-                WHERE o.user_id = $1
+                WHERE o.user_id = $1::bigint
             """, user_id)
         if not orders:
             await update.message.reply_text("You have no orders yet.")
@@ -258,7 +258,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
-                SELECT status FROM orders WHERE user_id=$1 AND product_id=$2 AND status='accepted'
+                SELECT status FROM orders WHERE user_id=$1::bigint AND product_id=$2 AND status='accepted'
             """, user_id, product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
@@ -343,7 +343,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             JOIN products p ON o.product_id = p.id
             WHERE o.order_id = $1
         """, order_id)
-        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id=$1", order['user_id'])
+        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id=$1::bigint", order['user_id'])
 
     for admin in ADMIN_IDS:
         try:
