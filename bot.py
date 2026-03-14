@@ -24,39 +24,51 @@ if not BOT_TOKEN or not DATABASE_URL or not ADMIN_IDS:
 
 # Database connection pool
 async def init_db():
-    pool = await asyncpg.create_pool(DATABASE_URL, ssl="require")
-    async with pool.acquire() as conn:
-        # Create tables if not exist
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                first_name TEXT
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE,
-                price INTEGER,
-                file_id TEXT,
-                guide_text TEXT,
-                guide_video_id TEXT,
-                qr_code_id TEXT
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id TEXT PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                product_id INTEGER REFERENCES products(id),
-                amount INTEGER,
-                status TEXT DEFAULT 'pending',
-                payer_name TEXT,
-                screenshot_id TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+    pool = AsyncConnectionPool(
+        conninfo=DATABASE_URL,
+        kwargs={"ssl": "require"},
+        open=False
+    )
+    await pool.open()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT
+                );
+            """)
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE,
+                    price INTEGER,
+                    file_id TEXT,
+                    guide_text TEXT,
+                    guide_video_id TEXT,
+                    qr_code_id TEXT
+                );
+            """)
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders (
+                    order_id TEXT PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id),
+                    product_id INTEGER REFERENCES products(id),
+                    amount INTEGER,
+                    status TEXT DEFAULT 'pending',
+                    payer_name TEXT,
+                    screenshot_id TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            for product in ['Protector Script', 'Auto Insta Maker Script', 'Stock Checker Script']:
+                await cur.execute("""
+                    INSERT INTO products (name, price) VALUES (%s, %s)
+                    ON CONFLICT (name) DO NOTHING
+                """, (product, 0))
+    return pool
+    
         # Insert default products if not exist
         for product in ['Protector Script', 'Auto Insta Maker Script', 'Stock Checker Script']:
             await conn.execute("""
