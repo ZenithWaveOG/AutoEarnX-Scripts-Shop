@@ -117,11 +117,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     pool = context.bot_data['db_pool']
     async with pool.acquire() as conn:
-        # Cast user_id via text to force BIGINT
+        # Pass user.id as string and cast to bigint
         await conn.execute("""
-            INSERT INTO users (user_id, username, first_name) VALUES ($1::text::bigint, $2, $3)
+            INSERT INTO users (user_id, username, first_name) VALUES ($1::bigint, $2, $3)
             ON CONFLICT (user_id) DO NOTHING
-        """, user.id, user.username, user.first_name)
+        """, str(user.id), user.username, user.first_name)
     await update.message.reply_text(
         f"Welcome {user.first_name}! Choose an option:",
         reply_markup=get_main_menu_keyboard(user.id)
@@ -151,8 +151,8 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 SELECT o.order_id, o.product_id, o.status, p.name
                 FROM orders o
                 JOIN products p ON o.product_id = p.id
-                WHERE o.user_id = $1::text::bigint
-            """, user_id)
+                WHERE o.user_id = $1::bigint
+            """, str(user_id))
         if not orders:
             await update.message.reply_text("You have no orders yet.")
             return
@@ -236,8 +236,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO orders (order_id, user_id, product_id, amount) VALUES ($1, $2::text::bigint, $3, $4)
-            """, order_id, user_id, product_id, price)
+                INSERT INTO orders (order_id, user_id, product_id, amount) VALUES ($1, $2::bigint, $3, $4)
+            """, order_id, str(user_id), product_id, price)
 
         context.user_data['current_order'] = order_id
         context.user_data['current_product'] = product_id
@@ -264,8 +264,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
-                SELECT status FROM orders WHERE user_id = $1::text::bigint AND product_id = $2 AND status='accepted'
-            """, user_id, product_id)
+                SELECT status FROM orders WHERE user_id = $1::bigint AND product_id = $2 AND status='accepted'
+            """, str(user_id), product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
@@ -279,8 +279,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
-                SELECT status FROM orders WHERE user_id = $1::text::bigint AND product_id = $2 AND status='accepted'
-            """, user_id, product_id)
+                SELECT status FROM orders WHERE user_id = $1::bigint AND product_id = $2 AND status='accepted'
+            """, str(user_id), product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
@@ -297,7 +297,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await conn.execute("UPDATE orders SET status='accepted' WHERE order_id = $1", order_id)
             row = await conn.fetchrow("SELECT user_id, product_id FROM orders WHERE order_id = $1", order_id)
             if row:
-                user_id = row['user_id']  # this comes from DB as BIGINT, already safe
+                user_id = row['user_id']  # this comes from DB as int, safe to use directly in send_message
                 product_id = row['product_id']
                 file_id = await conn.fetchval("SELECT file_id FROM products WHERE id = $1", product_id)
         try:
@@ -349,7 +349,8 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             JOIN products p ON o.product_id = p.id
             WHERE o.order_id = $1
         """, order_id)
-        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id = $1::text::bigint", order['user_id'])
+        # user_id from DB is int, but we need to pass as string for the next query
+        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id = $1::bigint", str(order['user_id']))
 
     for admin in ADMIN_IDS:
         try:
