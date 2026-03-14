@@ -10,6 +10,10 @@ from telegram.ext import (
 )
 from telegram.ext import ApplicationBuilder
 import asyncpg
+import warnings
+from telegram.warnings import PTBUserWarning
+
+warnings.filterwarnings("ignore", category=PTBUserWarning, message=".*CallbackQueryHandler.*")
 
 # Enable logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -573,7 +577,7 @@ def main():
     application.add_handler(payment_conv)
 
     # Admin upload handlers
-    application.add_handler(MessageHandler(filters.DOCUMENT & filters.ChatType.PRIVATE, handle_admin_upload))
+    application.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_admin_upload))
     application.add_handler(MessageHandler(filters.VIDEO & filters.ChatType.PRIVATE, handle_admin_upload))
     application.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, handle_admin_upload))
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_admin_upload))
