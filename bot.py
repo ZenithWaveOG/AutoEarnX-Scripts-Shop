@@ -56,7 +56,7 @@ for product in ['Protector Script', 'Auto Insta Maker Script', 'Stock Checker Sc
 conn.commit()
 
 # Admin IDs (replace with your Telegram user ID)
-ADMIN_IDS = [123456789]  # <-- CHANGE THIS TO YOUR USER ID
+ADMIN_IDS = [8537079657]  # <-- CHANGE THIS TO YOUR USER ID
 
 # States for conversation handlers
 ADD_FILE, ADD_GUIDE, ADD_VIDEO, CHANGE_PRICE, BROADCAST, WAIT_PAYER_NAME, WAIT_SCREENSHOT, SET_QR = range(8)
@@ -494,7 +494,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # Replace with your bot token
-    application = Application.builder().token("YOUR_BOT_TOKEN_HERE").build()
+    application = Application.builder().token("8200135789:AAFJ3n-ufRGR76sJV8GXb5-0NAuU-vQdS0M").build()
 
     # Handlers
     application.add_handler(CommandHandler("start", start))
