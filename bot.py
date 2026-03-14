@@ -117,11 +117,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     pool = context.bot_data['db_pool']
     async with pool.acquire() as conn:
-        # Pass user.id as string and cast to bigint
+        # Pass user.id as int and cast to bigint
         await conn.execute("""
             INSERT INTO users (user_id, username, first_name) VALUES ($1::bigint, $2, $3)
             ON CONFLICT (user_id) DO NOTHING
-        """, str(user.id), user.username, user.first_name)
+        """, user.id, user.username, user.first_name)
     await update.message.reply_text(
         f"Welcome {user.first_name}! Choose an option:",
         reply_markup=get_main_menu_keyboard(user.id)
@@ -152,7 +152,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 FROM orders o
                 JOIN products p ON o.product_id = p.id
                 WHERE o.user_id = $1::bigint
-            """, str(user_id))
+            """, user_id)
         if not orders:
             await update.message.reply_text("You have no orders yet.")
             return
@@ -237,7 +237,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO orders (order_id, user_id, product_id, amount) VALUES ($1, $2::bigint, $3, $4)
-            """, order_id, str(user_id), product_id, price)
+            """, order_id, user_id, product_id, price)
 
         context.user_data['current_order'] = order_id
         context.user_data['current_product'] = product_id
@@ -265,7 +265,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
                 SELECT status FROM orders WHERE user_id = $1::bigint AND product_id = $2 AND status='accepted'
-            """, str(user_id), product_id)
+            """, user_id, product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
@@ -280,7 +280,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
                 SELECT status FROM orders WHERE user_id = $1::bigint AND product_id = $2 AND status='accepted'
-            """, str(user_id), product_id)
+            """, user_id, product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
@@ -297,7 +297,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await conn.execute("UPDATE orders SET status='accepted' WHERE order_id = $1", order_id)
             row = await conn.fetchrow("SELECT user_id, product_id FROM orders WHERE order_id = $1", order_id)
             if row:
-                user_id = row['user_id']  # this comes from DB as int, safe to use directly in send_message
+                user_id = row['user_id']  # already int from DB
                 product_id = row['product_id']
                 file_id = await conn.fetchval("SELECT file_id FROM products WHERE id = $1", product_id)
         try:
@@ -349,8 +349,8 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             JOIN products p ON o.product_id = p.id
             WHERE o.order_id = $1
         """, order_id)
-        # user_id from DB is int, but we need to pass as string for the next query
-        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id = $1::bigint", str(order['user_id']))
+        # user_id from DB is int, use it as int for the next query
+        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id = $1::bigint", order['user_id'])
 
     for admin in ADMIN_IDS:
         try:
