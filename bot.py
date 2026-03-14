@@ -10,10 +10,6 @@ from telegram.ext import (
 )
 from telegram.ext import ApplicationBuilder
 import asyncpg
-import warnings
-from telegram.warnings import PTBUserWarning
-
-warnings.filterwarnings("ignore", category=PTBUserWarning, message=".*CallbackQueryHandler.*")
 
 # Enable logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
