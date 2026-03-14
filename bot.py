@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import warnings
 from uuid import uuid4
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -9,7 +10,11 @@ from telegram.ext import (
     ConversationHandler, filters, ContextTypes
 )
 from telegram.ext import ApplicationBuilder
+from telegram.warnings import PTBUserWarning
 import asyncpg
+
+# Suppress the harmless PTBUserWarning about per_message=False
+warnings.filterwarnings("ignore", category=PTBUserWarning, message=".*CallbackQueryHandler.*")
 
 # Enable logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -112,10 +117,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     pool = context.bot_data['db_pool']
     async with pool.acquire() as conn:
+        # Cast user_id via text to force BIGINT
         await conn.execute("""
-    INSERT INTO users (user_id, username, first_name) VALUES ($1::bigint, $2, $3)
-    ON CONFLICT (user_id) DO NOTHING
-""", user.id, user.username, user.first_name)
+            INSERT INTO users (user_id, username, first_name) VALUES ($1::text::bigint, $2, $3)
+            ON CONFLICT (user_id) DO NOTHING
+        """, user.id, user.username, user.first_name)
     await update.message.reply_text(
         f"Welcome {user.first_name}! Choose an option:",
         reply_markup=get_main_menu_keyboard(user.id)
@@ -145,7 +151,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 SELECT o.order_id, o.product_id, o.status, p.name
                 FROM orders o
                 JOIN products p ON o.product_id = p.id
-                WHERE o.user_id = $1::bigint
+                WHERE o.user_id = $1::text::bigint
             """, user_id)
         if not orders:
             await update.message.reply_text("You have no orders yet.")
@@ -230,7 +236,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO orders (order_id, user_id, product_id, amount) VALUES ($1, $2, $3, $4)
+                INSERT INTO orders (order_id, user_id, product_id, amount) VALUES ($1, $2::text::bigint, $3, $4)
             """, order_id, user_id, product_id, price)
 
         context.user_data['current_order'] = order_id
@@ -258,12 +264,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
-                SELECT status FROM orders WHERE user_id=$1::bigint AND product_id=$2 AND status='accepted'
+                SELECT status FROM orders WHERE user_id = $1::text::bigint AND product_id = $2 AND status='accepted'
             """, user_id, product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
-            guide = await conn.fetchval("SELECT guide_text FROM products WHERE id=$1", product_id)
+            guide = await conn.fetchval("SELECT guide_text FROM products WHERE id = $1", product_id)
         if not guide:
             await query.edit_message_text("No guide available yet.")
             return
@@ -273,12 +279,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
             order = await conn.fetchval("""
-                SELECT status FROM orders WHERE user_id=$1 AND product_id=$2 AND status='accepted'
+                SELECT status FROM orders WHERE user_id = $1::text::bigint AND product_id = $2 AND status='accepted'
             """, user_id, product_id)
             if not order:
                 await query.edit_message_text("Access declined. You need to buy this script first.")
                 return
-            video_id = await conn.fetchval("SELECT guide_video_id FROM products WHERE id=$1", product_id)
+            video_id = await conn.fetchval("SELECT guide_video_id FROM products WHERE id = $1", product_id)
         if not video_id:
             await query.edit_message_text("No video guide available yet.")
             return
@@ -288,12 +294,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("accept_pay_"):
         order_id = data.split("_")[2]
         async with pool.acquire() as conn:
-            await conn.execute("UPDATE orders SET status='accepted' WHERE order_id=$1", order_id)
-            row = await conn.fetchrow("SELECT user_id, product_id FROM orders WHERE order_id=$1", order_id)
+            await conn.execute("UPDATE orders SET status='accepted' WHERE order_id = $1", order_id)
+            row = await conn.fetchrow("SELECT user_id, product_id FROM orders WHERE order_id = $1", order_id)
             if row:
-                user_id = row['user_id']
+                user_id = row['user_id']  # this comes from DB as BIGINT, already safe
                 product_id = row['product_id']
-                file_id = await conn.fetchval("SELECT file_id FROM products WHERE id=$1", product_id)
+                file_id = await conn.fetchval("SELECT file_id FROM products WHERE id = $1", product_id)
         try:
             await context.bot.send_message(chat_id=user_id, text="Your payment has been accepted. Here is your file.")
             await context.bot.send_document(chat_id=user_id, document=file_id)
@@ -304,8 +310,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("decline_pay_"):
         order_id = data.split("_")[2]
         async with pool.acquire() as conn:
-            await conn.execute("UPDATE orders SET status='declined' WHERE order_id=$1", order_id)
-            user_id = await conn.fetchval("SELECT user_id FROM orders WHERE order_id=$1", order_id)
+            await conn.execute("UPDATE orders SET status='declined' WHERE order_id = $1", order_id)
+            user_id = await conn.fetchval("SELECT user_id FROM orders WHERE order_id = $1", order_id)
         try:
             await context.bot.send_message(chat_id=user_id,
                 text="Your payment has been declined by the admin. If we are wrong, you can get help by the support.")
@@ -334,7 +340,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     pool = context.bot_data['db_pool']
     async with pool.acquire() as conn:
         await conn.execute("""
-            UPDATE orders SET payer_name=$1, screenshot_id=$2 WHERE order_id=$3
+            UPDATE orders SET payer_name = $1, screenshot_id = $2 WHERE order_id = $3
         """, context.user_data['payer_name'], file_id, order_id)
 
         order = await conn.fetchrow("""
@@ -343,7 +349,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             JOIN products p ON o.product_id = p.id
             WHERE o.order_id = $1
         """, order_id)
-        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id=$1::bigint", order['user_id'])
+        user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id = $1::text::bigint", order['user_id'])
 
     for admin in ADMIN_IDS:
         try:
@@ -463,7 +469,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if action_type == 'file':
             if update.message.document:
                 file_id = update.message.document.file_id
-                await conn.execute("UPDATE products SET file_id=$1 WHERE id=$2", file_id, product_id)
+                await conn.execute("UPDATE products SET file_id = $1 WHERE id = $2", file_id, product_id)
                 await update.message.reply_text("File saved successfully.")
             else:
                 await update.message.reply_text("Please send a document.")
@@ -471,7 +477,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif action_type == 'guide':
             if update.message.text:
                 text = update.message.text
-                await conn.execute("UPDATE products SET guide_text=$1 WHERE id=$2", text, product_id)
+                await conn.execute("UPDATE products SET guide_text = $1 WHERE id = $2", text, product_id)
                 await update.message.reply_text("Guide saved successfully.")
             else:
                 await update.message.reply_text("Please send text.")
@@ -479,7 +485,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif action_type == 'video':
             if update.message.video:
                 file_id = update.message.video.file_id
-                await conn.execute("UPDATE products SET guide_video_id=$1 WHERE id=$2", file_id, product_id)
+                await conn.execute("UPDATE products SET guide_video_id = $1 WHERE id = $2", file_id, product_id)
                 await update.message.reply_text("Video guide saved successfully.")
             else:
                 await update.message.reply_text("Please send a video.")
@@ -487,7 +493,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif action_type == 'qr':
             if update.message.photo:
                 file_id = update.message.photo[-1].file_id
-                await conn.execute("UPDATE products SET qr_code_id=$1 WHERE id=$2", file_id, product_id)
+                await conn.execute("UPDATE products SET qr_code_id = $1 WHERE id = $2", file_id, product_id)
                 await update.message.reply_text("QR code updated successfully.")
             else:
                 await update.message.reply_text("Please send a photo.")
@@ -495,7 +501,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif action_type == 'price':
             try:
                 price = int(update.message.text)
-                await conn.execute("UPDATE products SET price=$1 WHERE id=$2", price, product_id)
+                await conn.execute("UPDATE products SET price = $1 WHERE id = $2", price, product_id)
                 await update.message.reply_text("Price changed successfully.")
             except ValueError:
                 await update.message.reply_text("Invalid number. Please send a number.")
@@ -526,6 +532,8 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    if update and update.effective_message:
+        await update.effective_message.reply_text("An internal error occurred. Please try again later.")
 
 async def post_init(application: Application):
     """Initialize database pool and store in bot_data."""
