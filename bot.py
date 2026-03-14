@@ -1,14 +1,15 @@
 import os
 import logging
-import asyncpg
+import asyncio
 from uuid import uuid4
-from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
 )
+from telegram.ext import ApplicationBuilder
+import asyncpg
 
 # Enable logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -16,60 +17,48 @@ logger = logging.getLogger(__name__)
 
 # Environment variables
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g., postgresql://user:pass@host:port/db
+DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # e.g., https://your-app.onrender.com
+PORT = int(os.environ.get("PORT", 8080))
 
 if not BOT_TOKEN or not DATABASE_URL or not ADMIN_IDS:
     raise ValueError("Missing required environment variables: BOT_TOKEN, DATABASE_URL, ADMIN_IDS")
 
 # Database connection pool
 async def init_db():
-    pool = AsyncConnectionPool(
-        conninfo=DATABASE_URL,
-        kwargs={"ssl": "require"},
-        open=False
-    )
-    await pool.open()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT
-                );
-            """)
-            await cur.execute("""
-                CREATE TABLE IF NOT EXISTS products (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT UNIQUE,
-                    price INTEGER,
-                    file_id TEXT,
-                    guide_text TEXT,
-                    guide_video_id TEXT,
-                    qr_code_id TEXT
-                );
-            """)
-            await cur.execute("""
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id TEXT PRIMARY KEY,
-                    user_id BIGINT REFERENCES users(user_id),
-                    product_id INTEGER REFERENCES products(id),
-                    amount INTEGER,
-                    status TEXT DEFAULT 'pending',
-                    payer_name TEXT,
-                    screenshot_id TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            for product in ['Protector Script', 'Auto Insta Maker Script', 'Stock Checker Script']:
-                await cur.execute("""
-                    INSERT INTO products (name, price) VALUES (%s, %s)
-                    ON CONFLICT (name) DO NOTHING
-                """, (product, 0))
-    return pool
-    
-        # Insert default products if not exist
+    pool = await asyncpg.create_pool(DATABASE_URL, ssl="require")
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE,
+                price INTEGER,
+                file_id TEXT,
+                guide_text TEXT,
+                guide_video_id TEXT,
+                qr_code_id TEXT
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                product_id INTEGER REFERENCES products(id),
+                amount INTEGER,
+                status TEXT DEFAULT 'pending',
+                payer_name TEXT,
+                screenshot_id TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         for product in ['Protector Script', 'Auto Insta Maker Script', 'Stock Checker Script']:
             await conn.execute("""
                 INSERT INTO products (name, price) VALUES ($1, $2)
@@ -268,7 +257,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("guide_"):
         product_id = int(data.split("_")[1])
         async with pool.acquire() as conn:
-            # Check if user bought and accepted
             order = await conn.fetchval("""
                 SELECT status FROM orders WHERE user_id=$1 AND product_id=$2 AND status='accepted'
             """, user_id, product_id)
@@ -301,7 +289,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = data.split("_")[2]
         async with pool.acquire() as conn:
             await conn.execute("UPDATE orders SET status='accepted' WHERE order_id=$1", order_id)
-            # Get user_id and product_id
             row = await conn.fetchrow("SELECT user_id, product_id FROM orders WHERE order_id=$1", order_id)
             if row:
                 user_id = row['user_id']
@@ -350,7 +337,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             UPDATE orders SET payer_name=$1, screenshot_id=$2 WHERE order_id=$3
         """, context.user_data['payer_name'], file_id, order_id)
 
-        # Get order details for admin
         order = await conn.fetchrow("""
             SELECT o.user_id, o.product_id, o.amount, p.name as product_name
             FROM orders o
@@ -359,7 +345,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         """, order_id)
         user = await conn.fetchrow("SELECT username, first_name FROM users WHERE user_id=$1", order['user_id'])
 
-    # Forward to admins
     for admin in ADMIN_IDS:
         try:
             text = (f"New payment verification:\n"
@@ -515,7 +500,6 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             except ValueError:
                 await update.message.reply_text("Invalid number. Please send a number.")
 
-    # Clear action
     context.user_data.pop('admin_action', None)
 
 # Broadcast handler
@@ -554,11 +538,24 @@ async def shutdown(application: Application):
     if pool:
         await pool.close()
 
+async def set_webhook(application: Application):
+    """Set the webhook on startup."""
+    if not WEBHOOK_URL:
+        logger.warning("WEBHOOK_URL not set, skipping webhook setup")
+        return
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+
 def main():
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     application.post_shutdown = shutdown
 
-    # Handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     application.add_handler(CallbackQueryHandler(button_callback, pattern="^(buy_|guide_|video_|accept_pay_|decline_pay_|verify_payment|buy_accept|buy_decline).*$"))
@@ -593,7 +590,21 @@ def main():
 
     application.add_error_handler(error_handler)
 
-    application.run_polling()
+    # Start webhook
+    if WEBHOOK_URL:
+        # Run webhook setup before starting
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(set_webhook(application))
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="webhook",
+            webhook_url=f"{WEBHOOK_URL}/webhook"
+        )
+    else:
+        # Fallback to polling (for local testing)
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
